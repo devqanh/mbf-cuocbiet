@@ -292,6 +292,7 @@ function CostModal({ data, isNew, onChange, onSave, onClose, costTypes = [], pay
   const d = data; const set = (np) => onChange({ ...d, ...np });
   const rec = normKind(d.kind) === "recurring";
   const [err, setErr] = useState("");
+  const errRef = useRef(null);
   const [photoBusy, setPhotoBusy] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const photoRef = useRef(null);
@@ -333,9 +334,16 @@ function CostModal({ data, isNew, onChange, onSave, onClose, costTypes = [], pay
   }, [onUploadPhotos]);
   const removePhoto = (i) => set({ photos: photos.filter((_, j) => j !== i) });
   const reqLbl = (t) => <span>{t} <span style={{ color: "var(--bad, #d6453d)" }}>*</span></span>;
+  // Báo thiếu: popup cuộn dài nên chỉ hiện dải đỏ ở đầu form là KHÔNG THẤY (tưởng bấm Lưu không ăn)
+  // → kèm toast + cuộn tới đúng chỗ báo lỗi.
+  const fail = (msg) => {
+    setErr(msg);
+    window.trkToast && window.trkToast(msg, "error");
+    setTimeout(() => errRef.current && errRef.current.scrollIntoView({ behavior: "smooth", block: "center" }), 0);
+  };
   const trySave = () => {
-    if (!String(d.name || "").trim()) return setErr("Vui lòng chọn hoặc nhập tên chi phí.");
-    if (toNum(d.amount) <= 0) return setErr("Vui lòng nhập số tiền (lớn hơn 0).");
+    if (!String(d.name || "").trim()) return fail("Vui lòng chọn hoặc nhập tên chi phí.");
+    if (toNum(d.amount) <= 0) return fail("Vui lòng nhập số tiền (lớn hơn 0).");
     setErr(""); onSave();
   };
   const f = (label, node, full) => <div style={{ gridColumn: full ? "1 / -1" : "auto" }}>{lbl(label)}{node}</div>;
@@ -343,7 +351,7 @@ function CostModal({ data, isNew, onChange, onSave, onClose, costTypes = [], pay
     <Modal title={isNew ? "Thêm phiếu chi" : "Sửa phiếu chi"} subtitle={d.invoiceNo ? "# " + d.invoiceNo : "# hóa đơn tự sinh khi lưu"} width={640} icon={<I.fx />} onClose={onClose}
       footer={<div style={{ display: "flex", justifyContent: "flex-end", gap: 10, width: "100%" }}><Btn onClick={onClose}>Hủy</Btn><Btn variant="primary" onClick={trySave}>Lưu phiếu</Btn></div>}>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, padding: "6px 0 2px" }}>
-        {err && <div style={{ gridColumn: "1 / -1", display: "flex", gap: 7, alignItems: "center", fontSize: 12.5, color: "#b42318", background: "#fdecec", border: "1px solid #f3c9c9", borderRadius: 9, padding: "8px 12px" }}><i className="bi bi-exclamation-triangle-fill" /> {err}</div>}
+        {err && <div ref={errRef} style={{ gridColumn: "1 / -1", display: "flex", gap: 7, alignItems: "center", fontSize: 12.5, color: "#b42318", background: "#fdecec", border: "1px solid #f3c9c9", borderRadius: 9, padding: "8px 12px" }}><i className="bi bi-exclamation-triangle-fill" /> {err}</div>}
         {f(reqLbl("Loại chi phí (chọn danh mục để nhóm báo cáo — hoặc gõ riêng)"), <Combo value={d.name} onChange={(x) => set({ name: x })} options={costTypes} placeholder="Chọn loại chi phí xe…" />, true)}
         {f("Loại", (
           <div style={{ display: "inline-flex", background: "#f1f2f4", borderRadius: 8, padding: 2 }}>

@@ -52,7 +52,8 @@ function FleetApp({ modeSwitch }) {
     loadedSecs.current.add(sec);
     setSecLoading(true);
     api("GET", ROUTES.fleet + hash + "/section/" + sec).then((r) => {
-      if (r && r.ok) setDetail((d) => ({ ...d, [sec]: r[sec] || [] }));
+      // nhóm "costs" trả kèm costTypes (danh mục Loại chi phí xe cho Combo phiếu chi) — phải giữ lại
+      if (r && r.ok) setDetail((d) => ({ ...d, [sec]: r[sec] || [], ...(r.costTypes ? { costTypes: r.costTypes } : {}) }));
       else loadedSecs.current.delete(sec);
       setSecLoading(false);
     }).catch(() => { loadedSecs.current.delete(sec); setSecLoading(false); });

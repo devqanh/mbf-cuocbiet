@@ -77,6 +77,33 @@ class ShipmentController extends BaseTruckingController
         return response()->json(['ok' => true, 'updated' => $n]);
     }
 
+    /** Mọi lô cùng booking (cùng khách) — để điền số cont cho cả nhóm trong 1 popup. */
+    public function contsOfBooking(Request $request): JsonResponse
+    {
+        $d = $request->validate([
+            'booking'  => ['required', 'string'],
+            'customer' => ['nullable', 'string'],
+            'sheet'    => ['nullable', 'string'],
+        ]);
+        $list = $this->svc->shipmentsOfBooking($d['sheet'] ?? 'icd', $d['booking'], $d['customer'] ?? null);
+
+        return response()->json(['ok' => true, 'list' => $list]);
+    }
+
+    /** Gán số cont cho từng lô trong nhóm booking (mỗi lô một số). */
+    public function fillConts(Request $request): JsonResponse
+    {
+        $d = $request->validate([
+            'sheet'        => ['nullable', 'string'],
+            'rows'         => ['required', 'array', 'min:1'],
+            'rows.*.id'    => ['required', 'integer'],
+            'rows.*.contNo' => ['present', 'nullable', 'string'],
+        ]);
+        $n = $this->svc->assignContNos($d['sheet'] ?? 'icd', $d['rows']);
+
+        return response()->json(['ok' => true, 'updated' => $n]);
+    }
+
     /** Kiểm tra trước (dry-run) — không ghi DB, trả danh sách lỗi từng dòng. */
     public function check(Request $request): JsonResponse
     {

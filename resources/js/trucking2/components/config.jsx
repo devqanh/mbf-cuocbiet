@@ -40,6 +40,10 @@ function ConfigBody({ cfg, setCfg, sel, setSel, dirty, saving, onSave, dirtyMap,
   const addrArrKey = "warehouseAddrArr";
   const addrArr = cfg[addrArrKey] || [];
   const setAddr = (i, val) => { const a = [...addrArr]; while (a.length < list.length) a.push(""); a[i] = val; setCfg(addrArrKey, a); };
+  // Ghi chú kho (chỉ danh mục noted = Kho) — in ra cột "Địa chỉ đóng hàng" khi xuất Excel lô hàng.
+  const noteArrKey = "warehouseNoteArr";
+  const noteArr = cfg[noteArrKey] || [];
+  const setNote = (i, val) => { const a = [...noteArr]; while (a.length < list.length) a.push(""); a[i] = val; setCfg(noteArrKey, a); };
   // Tọa độ kho "lat,lng" (chỉ danh mục geo = Kho) — lưu theo CHỈ SỐ dòng; ghim qua MapPicker.
   const geoArrKey = "warehouseGeoArr";
   const geoArr = cfg[geoArrKey] || [];
@@ -90,6 +94,7 @@ function ConfigBody({ cfg, setCfg, sel, setSel, dirty, saving, onSave, dirtyMap,
       const ia = [...idArr]; while (ia.length < list.length) ia.push(null); ia.push(null); setCfg(idArrKey, ia);   // mục mới: chưa có id
     }
     if (g && g.addressed) { const a = [...addrArr]; while (a.length < list.length) a.push(""); a.push(""); setCfg(addrArrKey, a); }
+    if (g && g.noted) { const a = [...noteArr]; while (a.length < list.length) a.push(""); a.push(""); setCfg(noteArrKey, a); }
     if (g && g.geo) { const a = [...geoArr]; while (a.length < list.length) a.push(""); a.push(""); setCfg(geoArrKey, a); }
     setDraft("");
   };
@@ -104,6 +109,7 @@ function ConfigBody({ cfg, setCfg, sel, setSel, dirty, saving, onSave, dirtyMap,
     setCfg(idArrKey, insert(idArr, null, null));   // dòng mới: chưa có id
     // Kho (addressed/geo): chèn ô địa chỉ + tọa độ rỗng.
     if (g && g.addressed) setCfg(addrArrKey, insert(addrArr, "", ""));
+    if (g && g.noted) setCfg(noteArrKey, insert(noteArr, "", ""));
     if (g && g.geo) setCfg(geoArrKey, insert(geoArr, "", ""));
     setFocusIdx(pos);
   };
@@ -125,6 +131,7 @@ function ConfigBody({ cfg, setCfg, sel, setSel, dirty, saving, onSave, dirtyMap,
     const old = list[i]; setCfg(sel, list.filter((_, j) => j !== i));
     if (g && g.coded) { setCfg(codeArrKey, codeArr.filter((_, j) => j !== i)); setCfg(idArrKey, idArr.filter((_, j) => j !== i)); }
     if (g && g.addressed) setCfg(addrArrKey, addrArr.filter((_, j) => j !== i));
+    if (g && g.noted) setCfg(noteArrKey, noteArr.filter((_, j) => j !== i));
     if (g && g.geo) setCfg(geoArrKey, geoArr.filter((_, j) => j !== i));
     const drop = (mapKey, map) => { if (map[old] === undefined) return; const m = { ...map }; delete m[old]; setCfg(mapKey, m); };
     if (g && g.priced)  drop("prices", prices);
@@ -332,9 +339,9 @@ function ConfigBody({ cfg, setCfg, sel, setSel, dirty, saving, onSave, dirtyMap,
                           {grp.idxs.map((i) => {
                             const linkedToPrice = locked.has(list[i]);
                             // Kho (addressed/geo): mỗi TÊN có địa chỉ + ghim GPS riêng → grid rộng hơn, mobile xuống dòng.
-                            const wide = !!(g.addressed || g.geo);
+                            const wide = !!(g.addressed || g.geo || g.noted);
                             const grid = wide
-                              ? (isMobile ? "22px 1fr 28px" : "22px 1fr 1.4fr 116px 28px")
+                              ? (isMobile ? "22px 1fr 28px" : (g.noted ? "22px 0.9fr 1.25fr 1.25fr 116px 28px" : "22px 1fr 1.4fr 116px 28px"))
                               : "22px 1fr 28px";
                             const nameInput = (
                               <input value={list[i]} onChange={(e) => rename(i, e.target.value)} placeholder={(g && g.codeNameLabel) || "Tên địa điểm"}
@@ -347,6 +354,14 @@ function ConfigBody({ cfg, setCfg, sel, setSel, dirty, saving, onSave, dirtyMap,
                               <AddrInput value={addrArr[i] || ""} onChange={(v) => setAddr(i, v)}
                                 onPlace={g.geo ? (lat, lng) => setGeo(i, lat.toFixed(7) + "," + lng.toFixed(7)) : () => {}}
                                 mapsKey={mapsKey} placeholder="Gõ địa chỉ — gợi ý Google Maps (tự lấy tọa độ)" />
+                            );
+                            // Ghi chú kho = địa chỉ đóng hàng — xuất thẳng ra file Excel lô hàng.
+                            const noteCell = g.noted && (
+                              <input value={noteArr[i] || ""} onChange={(e) => setNote(i, e.target.value)}
+                                placeholder="Ghi chú — địa chỉ đóng hàng (xuất Excel)"
+                                title="Ghi chú của kho này — in vào cột “Địa chỉ đóng hàng” khi xuất Excel lô hàng"
+                                style={{ width: "100%", padding: "7px 10px", fontSize: 13, border: "1px solid var(--line)", borderRadius: 8, outline: "none", background: "#fff" }}
+                                onFocus={(e) => (e.target.style.borderColor = "var(--accent)")} onBlur={(e) => (e.target.style.borderColor = "var(--line)")} />
                             );
                             const geoCell = g.geo && (() => { const pinned = !!parseGeo(geoArr[i]); return (
                               <button type="button" onClick={() => setPickIdx(i)} title={pinned ? `Đã ghim: ${geoArr[i]} — bấm để sửa` : "Ghim tọa độ kho trên bản đồ"}
@@ -369,12 +384,13 @@ function ConfigBody({ cfg, setCfg, sel, setSel, dirty, saving, onSave, dirtyMap,
                               <div key={i} style={{ padding: "2px 0" }}>
                                 <div style={{ display: "grid", gridTemplateColumns: grid, gap: 8, alignItems: "center" }}>
                                   {icon}{nameInput}
-                                  {wide && !isMobile ? <>{addrCell}{geoCell}</> : null}
+                                  {wide && !isMobile ? <>{addrCell}{noteCell}{geoCell}</> : null}
                                   {delBtn}
                                 </div>
                                 {wide && isMobile && (
-                                  <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "4px 0 6px 30px" }}>
+                                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "4px 0 6px 30px" }}>
                                     <div style={{ flex: 1, minWidth: 0 }}>{addrCell}</div>{geoCell}
+                                    {noteCell && <div style={{ flexBasis: "100%", minWidth: 0 }}>{noteCell}</div>}
                                   </div>
                                 )}
                               </div>

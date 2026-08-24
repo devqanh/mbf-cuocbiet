@@ -23,7 +23,7 @@
 - [DB backup](db-backup.md) — `php artisan db:backup` (gzip, giữ 15 bản, báo cáo sys.backup_last_run); lịch daily 02:00 ở routes/console.php (CẦN cron schedule:run); card sao lưu ở /system-settings
 - [DB pull](db-pull.md) — `php artisan db:pull` kéo DB remote→local (ghi đè theo .env); cần --column-statistics=0; sai tên DB thì config:clear
 - [Date fields](date-fields.md) — input ngày/giờ React dùng DateField/DTField (Flatpickr locale VN, fallback native), KHÔNG dùng type=date native; trừ 2 trang public lái xe
-- [Ra status rule](ra-status-rule.md) — "đã ra" = có Giờ xe ra (gio_xe_ra) HOẶC Biển số ra (bks_ra); xe ngoài không có BKS nên giờ ra là đủ; áp ở badge/tab lọc/ô chọn cont khác ra; có ra_mode self/other/none (none→gio_xe_ra_xe cột riêng)
+- [Ra status rule](ra-status-rule.md) — "đã ra" CHỈ dựa Giờ xe ra (gio_xe_ra), không xét bks_ra; áp ở badge/tab lọc/ô chọn cont khác ra; ra_mode self/other/none gọi theo cắt móc (none→gio_xe_ra_xe cột riêng)
 - [Coded catalog edit](coded-catalog-edit.md) — Địa điểm/Kho cho sửa ký hiệu; reconcileLookup khớp theo id (idArr) giữ id khi đổi code, không đứt link; vẫn chặn trùng mã
 - [Location value = name](location-value-is-name.md) — Combo Nơi lấy/hạ phải lưu TÊN (duy nhất) chứ KHÔNG lưu ký hiệu vì nhiều địa điểm chung 1 mã; backend tự quy tên→mã khi định giá/báo cáo
 - [Duyệt chi theo lô (ĐÃ BỎ)](shipment-spend-duyet-chi.md) — đã gỡ "chi cho tài xế" khỏi Lô hàng + drop trucking_shipment_spends; chi lái nay ở Lộ trình
@@ -44,3 +44,4 @@
 - [Bảng kê xe ngoài + Thu phí lô](ext-truck-payable.md) — danh mục Đơn vị xe ngoài (bắt buộc khi Thuê xe ngoài) + module Bảng kê xe ngoài (payable/công nợ theo nhà xe, lọc Giờ xe đến); bảng kê khách thêm VAT% + 3 cột/lô; lô hàng có cột Thu phí (cước+dầu) dùng chung priceShipment
 - [Khoản chi phí auto + VAT](cost-item-auto-vat.md) — cờ "auto" (tự hiện popup + nhắc chưa-điền-số-HĐ mọi lô) và VAT% (chi phí net = số tiền ÷ (1+vat)) cho danh mục Khoản chi phí
 - [Import CSHT](csht-import.md) — nút /lo-hang import phí CSHT + Số tiền thanh lý vào chi phí lô theo số cont (khoản CSHT/Thanh lí); ghi đè khi import lại, đối chiếu Nhập/Xuất; thêm cột Ghi chú vào chi phí lô hàng
+- [Lệch ngày ô Excel](excel-date-cell-skew.md) — ô ngày/giờ kiểu Date của Excel đọc bằng SheetJS lệch ~30s ở múi VN (lùi 1 ngày / hụt 1 phút); parser client phải snapToMinute

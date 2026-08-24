@@ -21,7 +21,7 @@ class TruckingShipment extends Model
     protected $fillable = [
         'sheet', 'customer_id',
         'booking', 'inv', 'io', 'cru',
-        'qty', 'cont_type', 'cont_no', 'declaration_no', 'declaration_note', 'thanh_ly_date', 'csht_note', 'kho',
+        'qty', 'cont_type', 'cont_no', 'declaration_no', 'declarations', 'declaration_note', 'thanh_ly_date', 'csht_note', 'kho',
         'from_loc', 'to_loc',
         'bks_vao', 'bks_ra', 'driver', 'ra_mode', 'ra_other_id',
         'sail_date', 'cut_off', 'cont_den', 'cont_ra',
@@ -49,6 +49,7 @@ class TruckingShipment extends Model
         'gio_xe_ra_xe'    => 'datetime',
         'vat_rate'        => 'decimal:2',
         'tags'            => 'array',
+        'declarations'    => 'array',   // [{no, fee}] — 1 lô nhiều tờ khai, mỗi tờ khai 1 phí
     ];
 
     public function customer(): BelongsTo

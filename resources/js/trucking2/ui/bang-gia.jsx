@@ -1,6 +1,12 @@
 import React from "react";
 import { useIsMobile, I, Btn, Modal, DateField } from "@trk/lib.jsx";
 import { PriceList } from "@trk/pop.jsx";
+import { buildPriceBookWb } from "../components/price-excel.js";
+
+// "Canon Thăng Long" → "canon-thang-long" (tên file không dấu, không khoảng trắng)
+const slug = (s) => String(s || "")
+  .normalize("NFD").replace(/\p{M}/gu, "").replace(/đ/g, "d").replace(/Đ/g, "D")
+  .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "bang-gia";
 
 const fmtBD = (s) => { if (!s) return ""; const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s); return m ? `${m[3]}/${m[2]}/${m[1]}` : s; };
 const bookRange = (b) => (b && (b.from || b.to)) ? `${b.from ? fmtBD(b.from) : "…"} – ${b.to ? fmtBD(b.to) : "…"}` : "Mọi ngày";
@@ -130,6 +136,21 @@ function BangGiaPage({ cfg, setBooks, api, routes }) {
     } catch (er) { setQm((q) => ({ ...q, importing: false, err: "Lỗi kết nối khi nhập" })); }
   };
 
+  // ----- Xuất Excel bảng giá đang xem (dùng chính dòng đang hiển thị, kể cả sửa chưa lưu) -----
+  const exportBook = () => {
+    if (!curBook || !loaded) return;
+    const range = bookRange(curBook);
+    const wb = buildPriceBookWb(rows, {
+      customer: cur,
+      label: curBook.label || "",
+      range,
+      sheetName: curBook.label || "Bảng giá",
+      exportedAt: new Date().toLocaleString("vi-VN"),
+    });
+    const tag = curBook.label ? slug(curBook.label) : (curBook.from || curBook.to ? slug(range) : "moi-ngay");
+    window.XLSX.writeFile(wb, `bang-gia-${slug(cur)}-${tag}.xlsx`);
+  };
+
   // ----- CRUD book -----
   const [bm, setBm] = useState(null);   // {mode:'create'|'edit', id?, label, from, to}
   const submitBook = () => {
@@ -236,6 +257,13 @@ function BangGiaPage({ cfg, setBooks, api, routes }) {
                   <div style={{ flex: 1 }} />
                   {msg && <span style={{ fontSize: 12, fontWeight: 600, color: /lỗi|không/i.test(msg) ? "var(--danger)" : "var(--good)" }}>{msg}</span>}
                   {dirtyBook === curBook.id && <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600, color: "var(--warn)" }}><span style={{ width: 7, height: 7, borderRadius: 999, background: "var(--warn)" }} /> Chưa lưu</span>}
+                  <button type="button" onClick={exportBook} disabled={!loaded || !rows.length}
+                    title="Tải bảng giá đang xem về file .xlsx để xem/đối chiếu (gồm cả sửa chưa lưu)"
+                    style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 13px", fontSize: 12.5, fontWeight: 600, borderRadius: 9,
+                      cursor: loaded && rows.length ? "pointer" : "default", opacity: loaded && rows.length ? 1 : 0.55,
+                      border: "1px solid var(--line)", background: "#fff", color: "var(--ink-2)" }}>
+                    <i className="bi bi-download" /> Xuất Excel
+                  </button>
                   <input ref={quoteRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={onQuoteFile} />
                   <button type="button" onClick={() => quoteRef.current && quoteRef.current.click()}
                     title="Nhập từ file báo giá gốc (.xlsx) — chọn sheet, kiểm tra rồi mới import vào bảng giá này"

@@ -862,7 +862,12 @@ trait HandlesShipments
             'qty'          => $s->qty,
             'contType'     => $s->cont_type ?? '',
             'contNo'       => $s->cont_no ?? '',
-            'declNo'       => $s->declaration_no ?? '',
+            'declNo'       => $s->declaration_no ?? '',   // chuỗi gộp — giữ cho bảng kê / tìm kiếm
+            // Nguồn chân lý của tờ khai: mỗi tờ khai 1 số + 1 phí.
+            'declarations' => array_map(fn ($d) => [
+                'no'  => (string) ($d['no'] ?? ''),
+                'fee' => $this->outMoney($d['fee'] ?? 0),
+            ], (array) ($s->declarations ?? [])),
             'declNote'     => $s->declaration_note ?? '',
             'thanhLy'      => $this->outDate($s->thanh_ly_date),
             'cshtNote'     => $s->csht_note ?? '',
@@ -887,7 +892,6 @@ trait HandlesShipments
             'bksRa'        => $s->bks_ra ?? '',
             'raMode'       => $s->ra_mode ?? 'self',
             'raOtherId'    => $s->ra_other_id,
-            'driver'       => $s->driver ?? '',   // cột file "Xuất để cập nhật" (import cập nhật lô)
             'extVendor'    => $s->ext_vendor ?? '',
             'extFee'       => $this->outMoney($s->ext_fee),
             'sailDate'     => $this->outDate($s->sail_date),
@@ -1030,6 +1034,13 @@ trait HandlesShipments
                     throw new \RuntimeException('Lô "Thuê xe ngoài" cần chọn Nhà xe ngoài.');
                 }
             }
+            // TỜ KHAI — 1 lô nhiều tờ khai, mỗi tờ khai 1 phí: [{no, fee}].
+            // `declaration_no` vẫn được sinh ra (danh sách số cách nhau ", ") để tìm kiếm / bảng kê /
+            // xuất Excel dùng như trước. Phí tổng đồng bộ sang dòng chi phí src=thanhLyFee bên dưới.
+            if ($apply('declarations')) {
+                $s->declarations = $this->normDeclarations($data['declarations'] ?? []);
+                $s->declaration_no = implode(', ', array_column($s->declarations, 'no')) ?: null;
+            }
             // Nhãn (tags) — mảng chuỗi, chuẩn hóa: trim + bỏ rỗng + bỏ trùng (giữ thứ tự).
             if ($apply('tags')) {
                 $tags = [];
@@ -1118,9 +1129,122 @@ trait HandlesShipments
             }
             }   // end if apply('rev')
 
+            // Phí tờ khai → 1 dòng chi phí src=thanhLyFee = TỔNG phí các tờ khai (giữ nguyên cơ chế
+            // cột "Thanh lí" của bảng kê vẫn cộng theo src này). Chạy SAU khi dòng chi phí đã lưu.
+            if ($apply('declarations')) $this->syncDeclarationFee($s);
+
             $this->recomputeShipmentDerived($s, $only);
             return $s->fresh(['customer', 'costLines', 'revenueLines', 'payments']);
         });
+    }
+
+    /** Khoản chi phí cho phí mở tờ khai (đã khai sẵn trong danh mục — xem migration seed). */
+    private const DECL_FEE_ITEM = 'Phí mở tờ khai';
+
+    /**
+     * Chuẩn hóa danh sách tờ khai → [{no, fee}]: bỏ dòng không có số, gộp khoảng trắng,
+     * phí là số nguyên ≥ 0, bỏ số trùng (giữ dòng đầu). Nhận cả mảng chuỗi (chỉ số tờ khai).
+     */
+    private function normDeclarations($raw): array
+    {
+        $out = []; $seen = [];
+        foreach ((array) $raw as $d) {
+            if (! is_array($d)) $d = ['no' => $d, 'fee' => 0];
+            $no = preg_replace('/\s+/u', ' ', trim((string) ($d['no'] ?? ''))) ?? '';
+            if ($no === '') continue;
+            $k = mb_strtolower($no);
+            if (isset($seen[$k])) continue;
+            $seen[$k] = true;
+            $out[] = ['no' => $no, 'fee' => max(0, (int) round((float) $this->inMoney($d['fee'] ?? null)))];
+        }
+        return $out;
+    }
+
+    /**
+     * Đồng bộ TỔNG phí tờ khai sang 1 dòng chi phí src=thanhLyFee (tạo / cập nhật / xóa).
+     * Nguồn chân lý là cột `declarations`; dòng chi phí chỉ là bản chiếu để chi phí, báo cáo
+     * và cột "Thanh lí" của bảng kê hoạt động y như trước (chúng cộng theo src).
+     */
+    private function syncDeclarationFee(TruckingShipment $s): void
+    {
+        $total = 0;
+        foreach ((array) $s->declarations as $d) $total += (int) round((float) ($d['fee'] ?? 0));
+
+        $line = $s->costLines()->where('src', 'thanhLyFee')->orderBy('sort')->first();
+        if ($total <= 0) {
+            if ($line) $line->delete();
+        } elseif ($line) {
+            $line->fill(['amount' => $total])->save();
+        } else {
+            $item = TruckingCostItem::where('name', self::DECL_FEE_ITEM)->first();
+            $s->costLines()->create([
+                'item'         => self::DECL_FEE_ITEM,
+                'amount'       => $total,
+                'src'          => 'thanhLyFee',
+                'vat'          => $item?->vat ?? 0,
+                'color'        => $item?->color,
+                'cost_item_id' => $item?->id,
+                'billable'     => false,
+                'sort'         => (int) $s->costLines()->max('sort') + 1,
+            ]);
+        }
+        $s->unsetRelation('costLines');   // quan hệ đã cũ → để recompute đọc lại số mới
+    }
+
+    /**
+     * Mọi lô CÙNG BOOKING (cùng khách) — import "số lượng cont = N" đẻ ra N lô trống cont,
+     * danh sách này để điền số cont cho cả nhóm trong 1 lần, không phải tìm từng lô.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function shipmentsOfBooking(string $sheet, string $booking, ?string $customer = null): array
+    {
+        $booking = trim($booking);
+        if ($booking === '') return [];
+
+        $q = TruckingShipment::ofSheet($sheet)->with('customer')->where('booking', $booking);
+        // Booking có thể trùng giữa 2 khách → lọc thêm theo khách khi biết.
+        if ($customer !== null && trim($customer) !== '') {
+            $cname = preg_replace('/\s+/u', ' ', trim($customer)) ?? '';
+            $q->whereHas('customer', fn ($c) => $c->where('name', $cname));
+        }
+
+        return $q->orderBy('id')->get()->map(fn ($s) => [
+            'id'       => $s->id,
+            'contNo'   => $s->cont_no ?? '',
+            'contType' => $s->cont_type ?? '',
+            'io'       => $s->io ?? '',
+            'kho'      => $s->kho ?? '',
+            'customer' => $s->customer->name ?? '',
+            'booking'  => $s->booking ?? '',
+        ])->all();
+    }
+
+    /**
+     * Gán SỐ CONT cho từng lô theo cặp [id => số cont] (điền cont cho cả booking một lần).
+     * Đi qua saveShipment với $only=['contNo'] → giữ nguyên mọi field khác và vẫn recompute
+     * các cột dẫn xuất như khi sửa trong popup.
+     *
+     * @param  array<int,array{id:int|string,contNo:string}>  $pairs
+     * @return int số lô đã ghi
+     */
+    public function assignContNos(string $sheet, array $pairs): int
+    {
+        $want = [];
+        foreach ($pairs as $p) {
+            $id = (int) ($p['id'] ?? 0);
+            if ($id > 0) $want[$id] = $this->str($p['contNo'] ?? '');
+        }
+        if (empty($want)) return 0;
+
+        $n = 0;
+        foreach (TruckingShipment::ofSheet($sheet)->whereIn('id', array_keys($want))->get() as $s) {
+            $new = $want[$s->id];
+            if ((string) ($s->cont_no ?? '') === (string) ($new ?? '')) continue;   // không đổi → khỏi ghi
+            $this->saveShipment(['contNo' => $new], $s->sheet ?: $sheet, $s, ['contNo']);
+            $n++;
+        }
+        return $n;
     }
 
     /**
@@ -1220,8 +1344,9 @@ trait HandlesShipments
     {
         // Field nào kéo theo phần recompute nào (giữ đồng bộ với map $cols ở saveShipment).
         $touches = fn (array $keys) => $only === null || array_intersect($keys, $only) !== [];
-        $needTier2   = $touches(['cost', 'rev']);
-        $needTotals  = $touches(['cost', 'rev']);
+        // 'declarations' cũng đụng chi phí: phí tờ khai đồng bộ sang dòng src=thanhLyFee (xem syncDeclarationFee).
+        $needTier2   = $touches(['cost', 'rev', 'declarations']);
+        $needTotals  = $touches(['cost', 'rev', 'declarations']);
         $needVehicle = $touches(['bksVao']);
         $needDriver  = $touches(['driver']);
         $needLoc     = $touches(['from', 'to']);

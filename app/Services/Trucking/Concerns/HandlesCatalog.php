@@ -62,10 +62,16 @@ trait HandlesCatalog
                 // Mảng ID theo CHỈ SỐ dòng → reconcile khớp theo id, cho SỬA mã mà giữ nguyên id (không đứt link)
                 $cfg[$key . 'IdArr'] = $rows->map(fn ($r) => $r->id)->all();
             }
-            if ($key === 'warehouses') {   // Kho có thêm Địa chỉ + Tọa độ (mảng theo chỉ số dòng)
+            if ($key === 'warehouses') {   // Kho có thêm Địa chỉ + Ghi chú + Tọa độ (mảng theo chỉ số dòng)
                 $cfg['warehouseAddr']    = $rows->filter(fn ($r) => $r->address)->mapWithKeys(fn ($r) => [$r->name => $r->address])->all();
                 $cfg['warehouseAddrArr'] = $rows->map(fn ($r) => $r->address ?? '')->all();
                 $cfg['warehouseGeoArr']  = $rows->map(fn ($r) => ($r->lat !== null && $r->lng !== null) ? ($r->lat . ',' . $r->lng) : '')->all();
+                // Ghi chú kho = "địa chỉ đóng hàng" khi xuất Excel lô hàng. Map theo TÊN và theo KÝ HIỆU
+                // (lô lưu kho bằng ký hiệu; 1 ký hiệu nhiều tên → lấy ghi chú của dòng ĐẦU có ghi chú).
+                $cfg['warehouseNote']    = $rows->filter(fn ($r) => $r->note)->mapWithKeys(fn ($r) => [$r->name => $r->note])->all();
+                $cfg['warehouseNoteArr'] = $rows->map(fn ($r) => $r->note ?? '')->all();
+                $cfg['warehouseNoteCode'] = $rows->filter(fn ($r) => $r->note && $r->code)
+                    ->reduce(function ($acc, $r) { $acc[$r->code] ??= $r->note; return $acc; }, []);
             }
             if ($priced) {
                 foreach ($rows as $r) {
@@ -205,6 +211,10 @@ trait HandlesCatalog
                     $out['warehouseAddr']    = $rows->filter(fn ($r) => $r->address)->mapWithKeys(fn ($r) => [$r->name => $r->address])->all();
                     $out['warehouseAddrArr'] = $rows->map(fn ($r) => $r->address ?? '')->all();
                     $out['warehouseGeoArr']  = $rows->map(fn ($r) => ($r->lat !== null && $r->lng !== null) ? ($r->lat . ',' . $r->lng) : '')->all();
+                    $out['warehouseNote']    = $rows->filter(fn ($r) => $r->note)->mapWithKeys(fn ($r) => [$r->name => $r->note])->all();
+                    $out['warehouseNoteArr'] = $rows->map(fn ($r) => $r->note ?? '')->all();
+                    $out['warehouseNoteCode'] = $rows->filter(fn ($r) => $r->note && $r->code)
+                        ->reduce(function ($acc, $r) { $acc[$r->code] ??= $r->note; return $acc; }, []);
                 }
                 if ($key === 'locations') {
                     $lockedIds = TruckingPriceRow::query()->whereNotNull('location_id')->distinct()->pluck('location_id');

@@ -202,15 +202,17 @@ try {
 
         $before = TruckingShipment::find($h1->id)->to_loc;
         $res = $svc->importShipmentUpdate('icd', [
-            $rowH($h1->id, ['bksRa' => '29H-88888']),
-            $rowH($h1->id + 999999, ['bksRa' => '29H-99999']),
+            $rowH($h1->id, ['inv' => 'INV-OK']),
+            $rowH($h1->id + 999999, ['inv' => 'INV-LOI']),
         ]);
         $ok($res['valid'] === false && $res['updated'] === 0 && TruckingShipment::find($h1->id)->to_loc === $before, 'H6 all-or-nothing: 1 dòng lỗi là không ghi gì');
 
-        $r = $svc->validateShipmentUpdate('icd', [$rowH('', ['bksRa' => '29H-1'], 'ZZDUP7654321')]);
+        // Biển số phải có trong danh mục Xe (recompute map vehicle_id bằng khớp chuỗi chính xác).
+        $plate = \App\Models\TruckingVehicle::whereNotNull('plate')->where('plate', '!=', '')->value('plate');
+        $r = $svc->validateShipmentUpdate('icd', [$rowH('', ['bksRa' => $plate], 'ZZDUP7654321')]);
         $ok(! $r['valid'] && str_contains(implode(' ', $r['errors'][0]['reasons']), 'trùng ở 2 lô'), 'H7 cont trùng 2 lô → chặn, đòi ID');
 
-        $r = $svc->validateShipmentUpdate('icd', [$rowH('', ['contNo' => 'ZZKHAC1', 'bksRa' => '29H-2'], $h1->cont_no)]);
+        $r = $svc->validateShipmentUpdate('icd', [$rowH('', ['contNo' => 'ZZKHAC1', 'bksRa' => $plate], $h1->cont_no)]);
         $ok($r['valid'] && array_column($r['changes'][0]['cells'], 'field') === ['bksRa'], 'H8 cột Số cont bị bỏ qua khi dùng làm khóa');
 
         $r = $svc->validateShipmentUpdate('icd', [$rowH($h1->id, ['gioXeRa' => '2026-07-01T06:00'])]);
@@ -218,6 +220,13 @@ try {
 
         $r = $svc->validateShipmentUpdate('icd', [$rowH($h1->id, ['to' => 'KHONG-CO-TRONG-DANH-MUC'])]);
         $ok(! $r['valid'] && str_contains(implode(' ', $r['errors'][0]['reasons']), 'danh mục Địa điểm'), 'H10 chặn địa điểm ngoài danh mục');
+
+        $r = $svc->validateShipmentUpdate('icd', [$rowH($h1->id, ['bksVao' => '99Z-99999'])]);
+        $ok(! $r['valid'] && str_contains(implode(' ', $r['errors'][0]['reasons']), 'danh mục Xe'), 'H10b chặn biển số ngoài danh mục Xe');
+        if ($plate) {
+            $r = $svc->validateShipmentUpdate('icd', [$rowH($h1->id, ['bksVao' => mb_strtolower($plate)])]);
+            $ok($r['valid'] && ($r['changes'][0]['cells'][0]['new'] ?? '') === $plate, 'H10c biển số viết thường → chuẩn về đúng chuỗi danh mục');
+        }
 
         // Xuất → nhập lại nguyên vẹn: 0 lỗi, 0 ô đổi. Giá trị cũ có thể không còn hợp lệ theo
         // danh mục hiện tại (loại cont 20DC/40RHC) — ô KHÔNG sửa thì không được kiểm tra.
@@ -228,6 +237,36 @@ try {
             'gioXeDen' => '2026-07-01T08:00', 'gioXeRa' => '2026-07-01T06:00',
         ])]);
         $ok($r['valid'] && ! $r['changes'] && ! $r['warnings'], 'H11 xuất→nhập lại nguyên vẹn: 0 lỗi, 0 ô đổi, 0 cảnh báo');
+
+        // ---- Tờ khai (luồng riêng): mỗi tờ khai 1 dòng Excel → declPairs; tổng phí sang chi phí ----
+        $declRow = fn (array $pairs) => ['line' => 2, 'id' => (string) $h1->id, 'contNo' => '', 'raws' => [], 'values' => ['declPairs' => $pairs]];
+        $svc->importShipmentUpdate('icd', [$declRow([['no' => '103', 'fee' => '10000'], ['no' => '104', 'fee' => '20000']])]);
+        $h1d = TruckingShipment::with('costLines')->find($h1->id);
+        $ok(count($h1d->declarations) === 2 && $h1d->declaration_no === '103, 104', 'H12 ghi 2 tờ khai + declaration_no gộp cho tìm kiếm/bảng kê');
+        $ok((int) $h1d->costLines->where('src', 'thanhLyFee')->first()?->amount === 30000, 'H13 tổng phí mở tờ khai → dòng chi phí thanhLyFee');
+
+        $r = $svc->validateShipmentUpdate('icd', [$declRow([['no' => '103', 'fee' => '1'], ['no' => '103', 'fee' => '2']])]);
+        $ok(! $r['valid'] && str_contains(implode(' ', $r['errors'][0]['reasons']), 'bị lặp'), 'H14 số tờ khai lặp trong cùng lô → chặn');
+
+        $svc->importShipmentUpdate('icd', [$declRow([['no' => 'A1', 'fee' => '1000'], ['no' => 'A2', 'fee' => '2000'], ['no' => 'A3', 'fee' => '3000']])]);
+        $h1s = TruckingShipment::with('costLines')->find($h1->id);
+        $ok(array_column($h1s->declarations, 'no') === ['A1', 'A2', 'A3'], 'H14b thay cả danh sách tờ khai của lô');
+        $ok((int) $h1s->costLines->where('src', 'thanhLyFee')->first()?->amount === 6000, 'H14c tổng phí mở tờ khai = 6.000');
+
+        // File cập nhật LÔ không còn cột tờ khai → không đụng được tờ khai
+        $r = $svc->validateShipmentUpdate('icd', [$rowH($h1->id, ['declNos' => '999', 'declFees' => '999'])]);
+        $ok($r['valid'] && ! $r['changes'], 'H14d cột tờ khai đã gỡ khỏi file lô — bị bỏ qua');
+
+        // ---- Cước xe ngoài: ghi vào dòng chi phí src=extTruck, không đụng khoản khác ----
+        $r = $svc->validateShipmentUpdate('icd', [$rowH($h1->id, ['extFee' => '2000000'])]);
+        $ok(! $r['valid'] && str_contains(implode(' ', $r['errors'][0]['reasons']), 'Nhà xe ngoài'), 'H15 cước xe ngoài thiếu nhà xe → chặn');
+        $vend = \App\Models\TruckingExtVendor::first()?->name;
+        if ($vend) {
+            $svc->importShipmentUpdate('icd', [$rowH($h1->id, ['extVendor' => $vend, 'extFee' => '2000000'])]);
+            $h1e = TruckingShipment::with('costLines')->find($h1->id);
+            $ok((int) $h1e->ext_fee === 2000000 && $h1e->costLines->where('src', 'extTruck')->count() === 1, 'H16 cước xe ngoài → 1 dòng extTruck + chốt ext_fee');
+            $ok((int) $h1e->costLines->where('src', 'thanhLyFee')->first()?->amount === 6000, 'H17 phí mở tờ khai không bị đụng khi sửa cước xe ngoài');
+        }
     } finally {
         foreach ([$h1, $hDup1, $hDup2] as $x) TruckingShipment::find($x->id)?->delete();
         TruckingCustomer::where('name', '__TEST_UPD__')->delete();

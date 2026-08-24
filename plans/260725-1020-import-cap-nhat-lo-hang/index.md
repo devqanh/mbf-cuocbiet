@@ -131,6 +131,35 @@ Luật kiểm tra từng dòng:
 - Lô trong bảng kê → có cảnh báo, vẫn ghi được.
 - Sau import: `cuocDau`/free time/derived tính lại đúng (recompute chạy qua `saveShipment`).
 
+## Bổ sung 2026-07-30 (user chốt)
+
+- File cập nhật thêm 2 cột **chỉ đọc** `KHÁCH HÀNG` / `SỐ BOOKING/BILL` để nhận ra dòng nào là lô
+  nào (lô chưa điền cont thì nhìn vào đây). Parser không gửi 2 cột này lên server.
+- **Bỏ** cột `CẮT MÁNG` và `TÀI XẾ`.
+- **Thêm** cột `CƯỚC XE NGOÀI` — không phải cột DB: ghi vào dòng chi phí `src=extTruck`
+  (item "Cước xe ngoài"), `ext_fee` tự chốt lại qua recompute. Bắt buộc có Nhà xe ngoài.
+- **Tách 2 luồng** (user chốt): file "Cập nhật lô" KHÔNG có cột tờ khai; tờ khai đi qua nút riêng
+  **"Cập nhật tờ khai"** — mỗi tờ khai là 1 DÒNG Excel (lặp lại ID LÔ), mỗi ô đúng 1 giá trị.
+  Lý do bỏ cách "nhiều giá trị trong 1 ô cách nhau dấu phẩy": dấu phẩy đụng dấu phân cách nghìn
+  của Excel (`250,000` bị tách thành 2 giá trị). Frontend gom theo lô → `values.declPairs`, dùng
+  chung endpoint `shipment-update` nên không thêm route/quyền mới.
+- File cập nhật lô kèm **6 sheet giá trị hợp lệ** (Địa điểm · Kho · Loại cont · Nhà xe ngoài ·
+  Biển số · Sà lan) và **BKS vào/ra nay bắt buộc khớp danh mục Xe** (recompute map `vehicle_id`
+  bằng so khớp chuỗi chính xác — gõ sai là lô mất liên kết xe, báo cáo theo xe hụt).
+- Khoản `Phí mở tờ khai` + `Cước xe ngoài` được khai sẵn vào danh mục Khoản chi phí
+  (migration `2026_08_04_000001`) — trước đây 2 khoản hệ thống này không có trong danh mục nên
+  dòng chi phí bị `cost_item_id` rỗng.
+- **1 lô nhiều tờ khai, mỗi tờ khai 1 phí**: cột JSON `declarations` = `[{no, fee}]`
+  (migration `2026_07_30_000001`, backfill từ `declaration_no` + dòng `thanhLyFee`).
+  `declaration_no` vẫn được sinh (danh sách số cách nhau ", ") nên tìm kiếm / bảng kê / xuất Excel
+  không phải đổi. Tổng phí đồng bộ sang 1 dòng chi phí `src=thanhLyFee` → cột "Thanh lí" của bảng kê
+  và báo cáo chạy y như trước. Popup: repeater "Tờ khai" (số + phí + xóa), bỏ ô "Phí thanh lý tờ khai" cũ.
+  File Excel giữ **1 dòng/lô**: 2 cột song song `SỐ TỜ KHAI` / `PHÍ TỜ KHAI` khớp theo thứ tự,
+  lệch số lượng là lỗi; chỉ sửa cột phí thì danh sách số giữ nguyên.
+- Nút "Xuất để cập nhật" tách 3 phạm vi: **theo bộ lọc đang xem · chỉ lô chưa ra · tất cả**.
+- `recomputeShipmentDerived` coi `declarations` là nhóm đụng chi phí (nếu không, sửa phí tờ khai
+  sẽ không tính lại `cost_total`).
+
 ## Ghi chú khi triển khai
 
 - Nơi lấy/hạ: nhập KÝ HIỆU dùng chung cho nhiều địa điểm (vd mã HPP có TÂN VŨ, GIC, ĐÌNH VŨ…)

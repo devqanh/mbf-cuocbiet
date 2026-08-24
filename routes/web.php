@@ -180,6 +180,9 @@ Route::middleware('auth')->group(function () {
         });
         Route::middleware('permission:shipments.update')->group(function () {
             Route::post('/shipments/bulk',      [TruckingShipmentController::class, 'bulkUpdate'])->name('shipments.bulkUpdate');
+            // Điền số cont cho cả nhóm booking (import "số lượng cont = N" đẻ ra N lô trống cont)
+            Route::get('/shipment-conts',       [TruckingShipmentController::class, 'contsOfBooking'])->name('shipmentContsOfBooking');
+            Route::post('/shipment-conts',      [TruckingShipmentController::class, 'fillConts'])->name('shipmentContsFill');
             Route::post('/csht-import/check',   [TruckingShipmentController::class, 'cshtCheck'])->name('cshtCheck');
             Route::post('/csht-import',         [TruckingShipmentController::class, 'cshtImport'])->name('cshtImport');
             Route::post('/shipment-update/check', [TruckingShipmentController::class, 'updateCheck'])->name('shipmentUpdateCheck');
