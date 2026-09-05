@@ -73,6 +73,8 @@ function ShipmentsApp() {
   const [fromLocSel, setFromLocSel] = useState(pf.fromLocSel || []);    // lọc theo NƠI LẤY (ký hiệu) — chọn nhiều
   const [fromMode, setFromMode] = useState(pf.fromMode || "exclude");   // GỒM (include) | LOẠI TRỪ (exclude) nơi lấy
   const [fromLocs, setFromLocs] = useState(P0.fromLocs || []);
+  const [custSel, setCustSel] = useState(pf.custSel || []);      // lọc theo KHÁCH HÀNG (tên) — chọn nhiều (OR)
+  const [custOptions, setCustOptions] = useState(P0.custOptions || []);
   const [denDate, setDenDate] = useState(pf.denDate || "");     // lọc theo Giờ đến kế hoạch (gio_den_du_kien) — chọn 1 NGÀY
   const [tagSel, setTagSel] = useState(pf.tagSel || []);        // lọc theo NHÃN — chọn nhiều (OR)
   const [tagOptions, setTagOptions] = useState(P0.tagOptions || []);
@@ -133,6 +135,7 @@ function ShipmentsApp() {
     if (toLocSel && toLocSel.length) p.set("toMode", toMode);
     (fromLocSel || []).forEach((v) => p.append("fromLoc[]", v));
     if (fromLocSel && fromLocSel.length) p.set("fromMode", fromMode);
+    (custSel || []).forEach((v) => p.append("cust[]", v));   // chọn nhiều khách → OR
     if (denDate) p.set("denDate", denDate);
     (tagSel || []).forEach((v) => p.append("tags[]", v));
     if (sort.key !== "default") { p.set("sort", sort.key); p.set("dir", String(sort.dir)); }
@@ -153,6 +156,7 @@ function ShipmentsApp() {
         setFollowStats(r.followStats || { anyShips: 0, missShips: 0, byColor: [] });
         if (r.toLocs) setToLocs(r.toLocs);
         if (r.fromLocs) setFromLocs(r.fromLocs);
+        if (r.custOptions) setCustOptions(r.custOptions);
         if (r.tagOptions) setTagOptions(r.tagOptions);
         if (r.sibs) setSibs(r.sibs);
         if (r.page !== pg) setPage(r.page);
@@ -171,8 +175,8 @@ function ShipmentsApp() {
   useEffect(() => { const t = setTimeout(() => { setQDeb(q); setPage(1); }, 350); return () => clearTimeout(t); }, [q]);
   // Lưu bộ lọc xuống localStorage mỗi khi đổi (để load lại trang giữ nguyên cấu hình).
   useEffect(() => {
-    try { localStorage.setItem(FILTER_KEY, JSON.stringify({ filter, followFilter, toLocSel, toMode, fromLocSel, fromMode, denDate, tagSel, perPage, sort, showFilters })); } catch (e) {}
-  }, [filter, followFilter, toLocSel, toMode, fromLocSel, fromMode, denDate, tagSel, perPage, sort, showFilters]);
+    try { localStorage.setItem(FILTER_KEY, JSON.stringify({ filter, followFilter, toLocSel, toMode, fromLocSel, fromMode, custSel, denDate, tagSel, perPage, sort, showFilters })); } catch (e) {}
+  }, [filter, followFilter, toLocSel, toMode, fromLocSel, fromMode, custSel, denDate, tagSel, perPage, sort, showFilters]);
 
   // Nạp lại khi tham số đổi. Bỏ lần mount đầu NẾU không có bộ lọc lưu (đã có boot mặc định);
   // nếu CÓ bộ lọc lưu (khác mặc định) → nạp ngay lần đầu để áp đúng cấu hình đã khôi phục.
@@ -180,7 +184,7 @@ function ShipmentsApp() {
   useEffect(() => {
     if (skipFirst.current) { skipFirst.current = false; return; }
     load();
-  }, [page, perPage, qDeb, filter, followFilter, toLocSel, toMode, fromLocSel, fromMode, denDate, tagSel, sort]);
+  }, [page, perPage, qDeb, filter, followFilter, toLocSel, toMode, fromLocSel, fromMode, custSel, denDate, tagSel, sort]);
   // Mở từ Lộ trình/Bảng kê (?q/?open): boot là danh sách CHƯA lọc → tải lại theo q ngay + tự mở popup.
   useEffect(() => { if (_initSp.get("q") || _initSp.get("open")) { skipFirst.current = false; load(); } }, []);
 
@@ -728,11 +732,12 @@ function ShipmentsApp() {
   const setFilterP = (f) => { setFilter(f); setPage(1); };
   const setFollowP = (f) => { setFollowFilter(f); setPage(1); };
   const setToLocP = (arr) => { setToLocSel(arr); setPage(1); };   // chọn nhiều ký hiệu nơi hạ (OR)
+  const setCustP = (arr) => { setCustSel(arr); setPage(1); };      // lọc theo khách hàng (OR)
   const setDenDateP = (v) => { setDenDate(v); setPage(1); };      // lọc theo Giờ đến kế hoạch (1 ngày)
   const setTagP = (arr) => { setTagSel(arr); setPage(1); };       // lọc theo nhãn
   // Số bộ lọc chi tiết đang bật + xóa tất cả (để hiện badge / nút Xóa lọc)
-  const activeFilters = (toLocSel.length ? 1 : 0) + (fromLocSel.length ? 1 : 0) + (denDate ? 1 : 0) + (tagSel.length ? 1 : 0) + (followFilter !== "all" ? 1 : 0);
-  const clearFilters = () => { setToLocSel([]); setToMode("include"); setFromLocSel([]); setFromMode("exclude"); setDenDate(""); setTagSel([]); setFollowFilter("all"); setPage(1); };
+  const activeFilters = (toLocSel.length ? 1 : 0) + (fromLocSel.length ? 1 : 0) + (custSel.length ? 1 : 0) + (denDate ? 1 : 0) + (tagSel.length ? 1 : 0) + (followFilter !== "all" ? 1 : 0);
+  const clearFilters = () => { setToLocSel([]); setToMode("include"); setFromLocSel([]); setFromMode("exclude"); setCustSel([]); setDenDate(""); setTagSel([]); setFollowFilter("all"); setPage(1); };
   // 1 ô lọc trong panel: nhãn nhỏ phía trên + control phía dưới (gọn, thẳng hàng)
   const FF = ({ label, icon, children }) => (
     <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
@@ -905,6 +910,7 @@ function ShipmentsApp() {
             <div style={{ display: "inline-flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
               {toLocSel.length > 0 && <FChip onClear={() => setToLocP([])}>{toMode === "exclude" ? "Hạ ⊘ " : "Hạ: "}{toLocSel.join(", ")}</FChip>}
               {fromLocSel.length > 0 && <FChip onClear={() => setFromLocP([])}>{fromMode === "exclude" ? "Lấy ⊘ " : "Lấy: "}{fromLocSel.join(", ")}</FChip>}
+              {custSel.length > 0 && <FChip onClear={() => setCustP([])}>Khách: {custSel.join(", ")}</FChip>}
               {denDate && <FChip onClear={() => setDenDateP("")}>Đóng hàng {fmtDate(denDate)}</FChip>}
               {tagSel.length > 0 && <FChip onClear={() => setTagP([])}>Nhãn: {tagSel.join(", ")}</FChip>}
               {followFilter !== "all" && <FChip onClear={() => setFollowP("all")}>Theo dõi: {followFilter === "missing" ? "chưa số HĐ" : followFilter === "any" ? "có theo dõi" : "màu"}</FChip>}
@@ -938,6 +944,9 @@ function ShipmentsApp() {
             <FF label="Nơi lấy" icon="bi-box-arrow-up-right">
               <ModeToggle mode={fromMode} onMode={setFromModeP} />
               <div style={{ width: isMobile ? 170 : 200 }}><MultiCombo values={fromLocSel} onChange={setFromLocP} options={fromLocs} placeholder={fromMode === "exclude" ? "Không trừ gì" : "Tất cả ký hiệu"} strict max={50} /></div>
+            </FF>
+            <FF label="Khách hàng" icon="bi-person-badge">
+              <div style={{ width: isMobile ? 190 : 240 }}><MultiCombo values={custSel} onChange={setCustP} options={custOptions} placeholder="Tất cả khách hàng" strict max={50} /></div>
             </FF>
             <FF label="Ngày đóng hàng" icon="bi-calendar-event">
               <div style={{ width: 150 }}><DateField value={denDate} onChange={setDenDateP} placeholder="Chọn ngày" /></div>

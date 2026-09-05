@@ -159,7 +159,9 @@ trait HandlesShipmentUpdateImport
         $seen = [];   // shipment_id => line (chặn 2 dòng cùng sửa 1 lô)
 
         foreach ($rows as $i => $row) {
-            $line = $i + 1;
+            // Dòng báo lỗi = dòng THẬT trong file Excel (client gửi kèm). Đếm theo thứ tự phần tử
+            // sẽ lệch vì payload đã bỏ dòng trắng — và luồng tờ khai còn gộp nhiều dòng theo lô.
+            $line = (int) ($row['line'] ?? 0) ?: $i + 1;
             $reasons = [];
             $s = $targets[$i] ?? null;
             if (! $s) {
@@ -415,6 +417,13 @@ trait HandlesShipmentUpdateImport
         }
 
         if (mb_strtolower($contRaw) === mb_strtolower($oldContNo)) return;
+
+        // Cắt móc = xe kéo cont của lô KHÁC cùng booking ra. Điền chính cont của lô này là nhầm cột.
+        if (mb_strtolower($contRaw) === mb_strtolower((string) $s->cont_no)) {
+            $reasons[] = 'Số cont ra "' . $contRaw . '" là cont của CHÍNH lô này — cột này cần cont của lô KHÁC cùng booking. '
+                . 'Xe kéo lại chính cont này thì để Kiểu ra = "Không cắt móc" và bỏ trống ô Số cont ra.';
+            return;
+        }
 
         $sibling = TruckingShipment::where('sheet', $s->sheet)
             ->where('booking', $s->booking)

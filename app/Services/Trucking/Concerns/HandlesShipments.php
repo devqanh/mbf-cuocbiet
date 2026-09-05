@@ -154,6 +154,22 @@ trait HandlesShipments
         $fromRaw = [];
         foreach ($fromSel as $code) foreach ($fromByCode[$code] ?? [$code] as $raw) $fromRaw[] = $raw;
 
+        // Lọc theo KHÁCH HÀNG — chọn nhiều = OR. Option = TÊN khách thực có trong lô của sheet;
+        // lọc quy về customer_id (nhiều khách có thể trùng tên → gom mọi id cùng tên).
+        $custSel = array_values(array_filter(array_map(fn ($x) => trim((string) $x), (array) ($p['cust'] ?? [])), fn ($x) => $x !== ''));
+        $custOptions = [];
+        $custIdsByName = [];
+        $custRows = TruckingCustomer::whereIn('id', TruckingShipment::ofSheet($sheet)->whereNotNull('customer_id')->distinct()->select('customer_id'))
+            ->orderBy('name')->get(['id', 'name']);
+        foreach ($custRows as $c) {
+            $n = trim((string) $c->name);
+            if ($n === '') continue;
+            if (! in_array($n, $custOptions, true)) $custOptions[] = $n;
+            $custIdsByName[$n][] = (int) $c->id;
+        }
+        $custIds = [];
+        foreach ($custSel as $n) foreach ($custIdsByName[$n] ?? [] as $id) $custIds[] = $id;
+
         // Lọc theo GIỜ ĐẾN KẾ HOẠCH (gio_den_du_kien) — chọn 1 NGÀY.
         $denDate = trim((string) ($p['denDate'] ?? ''));
 
@@ -204,11 +220,13 @@ trait HandlesShipments
                 $b->whereIn($col, $raw ?: ['\\0__none__']);
             }
         };
-        $searched = function () use ($sheet, $applySearch, $applyLoc, $toLocSel, $toLocRaw, $toMode, $fromSel, $fromRaw, $fromMode, $denDate, $tagSel) {
+        $searched = function () use ($sheet, $applySearch, $applyLoc, $toLocSel, $toLocRaw, $toMode, $fromSel, $fromRaw, $fromMode, $custSel, $custIds, $denDate, $tagSel) {
             $b = TruckingShipment::ofSheet($sheet);
             $applySearch($b);
             $applyLoc($b, 'to_loc', $toLocSel, $toLocRaw, $toMode);
             $applyLoc($b, 'from_loc', $fromSel, $fromRaw, $fromMode);
+            // Khách hàng = OR trên customer_id; tên chọn không còn khách nào → không lô nào khớp.
+            if ($custSel) $b->whereIn('customer_id', $custIds ?: [0]);
             if ($denDate !== '') $b->whereDate('gio_den_du_kien', $denDate);       // lô có Giờ đến KH = ngày chọn
             // Lọc nhãn = OR. Dùng JSON_SEARCH (khớp được trên MariaDB + JSON lưu unicode escaped, whereJsonContains fail).
             if ($tagSel) $b->where(function ($w) use ($tagSel) { foreach ($tagSel as $t) $w->orWhereRaw('JSON_SEARCH(tags, \'one\', ?) IS NOT NULL', [$t]); });
@@ -314,6 +332,7 @@ trait HandlesShipments
             // Danh sách KÝ HIỆU nơi hạ / nơi lấy thực có để đổ vào bộ lọc — gom theo ký hiệu, ổn định.
             'toLocs'       => $toLocCodes,
             'fromLocs'     => $fromCodes,
+            'custOptions'  => $custOptions,
             'tagOptions'   => $tagOptions,
         ];
     }

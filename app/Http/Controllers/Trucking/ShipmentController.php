@@ -34,7 +34,7 @@ class ShipmentController extends BaseTruckingController
     /** Trang Lô hàng — 1 trang (20 lô) + aggregate toàn cục. JSON cho client fetch. */
     public function page(Request $request): JsonResponse
     {
-        $params = $request->only(['page', 'perPage', 'q', 'filter', 'follow', 'sort', 'dir', 'all', 'toLoc', 'toMode', 'fromLoc', 'fromMode', 'denDate', 'tags']);
+        $params = $request->only(['page', 'perPage', 'q', 'filter', 'follow', 'sort', 'dir', 'all', 'toLoc', 'toMode', 'fromLoc', 'fromMode', 'denDate', 'tags', 'cust']);
         return response()->json(['ok' => true] + $this->svc->pagedShipments('icd', $params));
     }
 
@@ -163,6 +163,7 @@ class ShipmentController extends BaseTruckingController
         return $request->validate([
             'sheet'          => ['required', 'in:hph,icd'],
             'rows'           => ['present', 'array'],
+            'rows.*.line'    => ['nullable', 'integer'],   // số dòng THẬT trong file Excel (để báo lỗi đúng dòng)
             'rows.*.id'      => ['nullable'],
             'rows.*.contNo'  => ['nullable', 'string'],
             'rows.*.values'  => ['nullable', 'array'],
