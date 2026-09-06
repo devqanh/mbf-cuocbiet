@@ -15,7 +15,7 @@
 - [Vite port conflict / trắng trang](vite-port-conflict.md) — tunnel trắng trang do Vite chặn host (allowedHosts) HOẶC dự án khác chiếm 5173 trên [::1]; chẩn đoán bằng so HTTP IPv4 vs IPv6
 - [Asset management](asset-management.md) — Quản lý tài sản dùng chung trang/bảng Quản lý xe (cột kind=vehicle|asset, type='asset' không đụng phí xe); tái dùng tab chi phí/khấu hao/tài liệu
 - [Plan link](plan-link.md) — link kế hoạch công khai (token) cho lái xe mobile cập nhật giờ xe đến/ra + ảnh; lọc theo Giờ đến dự kiến; nút ở toolbar Lô hàng
-- [Dev no build](dev-no-build.md) — đang npm run dev, KHÔNG cần npm run build sau khi sửa .jsx
+- [Dev no build](dev-no-build.md) — kiểm tra public/hot trước: có = dev đang chạy (khỏi build), không có = phải npm run build
 - [Memory in repo](memory-in-repo.md) — memory junction sang repo docs/ai-memory để git/xem lại
 - [Trucking architecture](trucking-architecture.md) — controller đã tách theo domain (App\Http\Controllers\Trucking, BaseTruckingController); service đang tách dần bằng trait (Concerns), giữ nguyên route name + call-site
 - [Hashid routes](hashid-routes.md) — URL dùng hashid thay id số (Optimus+base62 thuần PHP, trait HasHashid, giữ id số trong JSON/payload + thêm field hashid); áp cho trucking entities + Task

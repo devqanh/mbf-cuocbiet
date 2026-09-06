@@ -1,12 +1,15 @@
 ---
 name: dev-no-build
-description: Đang chạy npm run dev — KHÔNG cần npm run build sau khi sửa .jsx
+description: Trước khi build frontend, kiểm tra public/hot — có = đang npm run dev (khỏi build), không có = phải npm run build
 metadata:
   type: feedback
 ---
 
-User chạy sẵn **`npm run dev`** (Vite HMR). Sửa file `.jsx`/`.js`/CSS xong **KHÔNG cần `npm run build`** — Vite tự rebuild/hot-reload.
+Đừng đoán, hãy **kiểm tra `public/hot`** trước khi quyết định build frontend:
 
-**Why:** trước đây phải build vì dev server (5173) không lộ qua tunnel ([[dev-tunnel-vite]]); giờ đã chạy dev được nên build thủ công là thừa, mất thời gian.
+- **Có `public/hot`** (hoặc 5173 đang LISTENING) → user đang chạy `npm run dev`, Vite HMR tự nạp. Sửa `.jsx`/`.js`/CSS xong **KHÔNG cần** `npm run build`.
+- **Không có `public/hot`** → app đang chạy bằng bundle trong `public/build`. Sửa xong **PHẢI** `npm run build`, nếu không thay đổi sẽ không lên (~2-3s).
 
-**How to apply:** sau khi sửa frontend, báo "đã sửa, dev tự nạp" — đừng chạy `npm run build`. Chỉ build khi user yêu cầu rõ hoặc khi deploy production (`git pull && npm run build`).
+**Why:** trạng thái này thay đổi theo phiên làm việc. Ngày 2026-09-06 mình tưởng vẫn đang `npm run dev` (theo ghi nhớ cũ) nhưng thực tế dev server đã tắt — nếu không kiểm tra thì sửa `excel.js` xong user sẽ không thấy gì đổi.
+
+**How to apply:** chạy `Test-Path public\hot` ngay trước khi báo kết quả cho user, rồi build hoặc không build theo đó. Xem thêm [[trucking-vite-architecture]], [[dev-tunnel-vite]], [[vite-port-conflict]].
