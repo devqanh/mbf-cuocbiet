@@ -98,7 +98,7 @@ trait HandlesShipments
     public function shipments(string $sheet): array
     {
         return TruckingShipment::ofSheet($sheet)
-            ->with(['customer', 'costLines', 'revenueLines', 'payments', 'raOther:id,gio_xe_ra'])
+            ->with(['customer', 'costLines', 'revenueLines', 'payments', 'raOther:id,cont_no,bks_ra,gio_xe_ra'])
             ->orderBy('id')
             ->get()
             ->map(fn ($s) => $this->shipmentToArray($s))
@@ -299,7 +299,7 @@ trait HandlesShipments
             $list->orderBy('id', 'desc');   // mặc định: lô MỚI NHẬP lên đầu (id giảm dần)
         }
 
-        $list->with(['customer', 'costLines', 'revenueLines', 'payments', 'raOther:id,gio_xe_ra']);
+        $list->with(['customer', 'costLines', 'revenueLines', 'payments', 'raOther:id,cont_no,bks_ra,gio_xe_ra']);
         if (! $all) $list->forPage($page, $perPage);
         // "Thu phí (cước+dầu)" CHO LÔ ĐÃ RA — DÙNG CHUNG priceShipment với bảng kê (1 nguồn công thức,
         // sửa 1 chỗ áp cả 2). Chỉ tính cho trang đang xem (không tính khi $all=export) để nhẹ query.
@@ -346,12 +346,14 @@ trait HandlesShipments
     public function siblingsList(string $sheet): array
     {
         return TruckingShipment::ofSheet($sheet)->orderBy('id')
-            ->toBase()->get(['id', 'cont_no', 'booking', 'gio_xe_ra', 'bks_ra'])   // không hydrate model — chỉ cột cần
+            ->toBase()->get(['id', 'cont_no', 'booking', 'gio_xe_ra', 'bks_ra', 'ra_mode', 'ra_other_id'])   // không hydrate model — chỉ cột cần
             ->map(fn ($s) => [
                 'id' => $s->id, 'contNo' => $s->cont_no ?? '', 'booking' => $s->booking ?? '',
                 // datetime thô "Y-m-d H:i:s" → "Y-m-dTH:i" cho DTField; bksRa giữ chuỗi
                 'gioXeRa' => $s->gio_xe_ra ? str_replace(' ', 'T', substr((string) $s->gio_xe_ra, 0, 16)) : '',
                 'bksRa'   => $s->bks_ra ?? '',
+                // Cont ra hộ lô này đang chọn — picker đánh dấu/cảnh báo "1 cont chỉ ra 1 lần" khi lô khác chọn trùng.
+                'raOtherId' => $s->ra_mode === 'other' ? ($s->ra_other_id ?: null) : null,
             ])
             ->all();
     }
@@ -836,7 +838,7 @@ trait HandlesShipments
         if (! $ids) return [];
 
         return TruckingShipment::whereIn('id', $ids)
-            ->with(['customer', 'costLines', 'revenueLines', 'payments', 'raOther:id,gio_xe_ra'])
+            ->with(['customer', 'costLines', 'revenueLines', 'payments', 'raOther:id,cont_no,bks_ra,gio_xe_ra'])
             ->get()
             ->map(fn ($s) => $this->shipmentToArray($s))
             ->all();
@@ -911,6 +913,10 @@ trait HandlesShipments
             'bksRa'        => $s->bks_ra ?? '',
             'raMode'       => $s->ra_mode ?? 'self',
             'raOtherId'    => $s->ra_other_id,
+            // Số cont của lô RA HỘ đi kèm luôn: lô đó thường ĐÃ RA nên không nằm trong tập đang xem
+            // (vd xuất "chỉ lô chưa ra") — tra theo id ở client sẽ trượt, cột Excel thành trống.
+            'raOtherContNo' => $s->raOther?->cont_no ?? '',
+            'raOtherBksRa'  => $s->raOther?->bks_ra ?? '',    // BKS xe kéo cont ra hộ — cột BKS RA của file Excel khi Cont khác ra
             'extVendor'    => $s->ext_vendor ?? '',
             'extFee'       => $this->outMoney($s->ext_fee),
             'sailDate'     => $this->outDate($s->sail_date),

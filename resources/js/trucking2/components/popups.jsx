@@ -313,9 +313,14 @@ function InfoPopup({ ship, patch, patchOther, onSave, isDirty, siblings = [], on
   const setExt = (np) => setCostItems(costItems.map((it) => (it.src === "extTruck" ? { ...it, ...np } : it)));
   // Chỉ liệt kê cont CHƯA RA = chưa có Giờ xe ra (của cont) — khớp quy tắc "đã ra = có gio_xe_ra".
   // Giữ cont đang chọn để không mất hiển thị lựa chọn.
+  // 1 cont chỉ ra 1 lần: cont đã là "cont ra hộ" của lô khác vẫn liệt kê nhưng đánh dấu + cảnh báo khi chọn
+  // (không chặn — có thể lô kia mới là lô chọn nhầm).
+  const takenBy = {};   // id cont ra hộ => lô đã chọn nó
+  siblings.forEach((x) => { if (x.raOtherId != null) takenBy[x.raOtherId] = x; });
   const sibOpts = siblings
     .filter((s) => !(s.gioXeRa || "").trim() || s.id === ship.raOtherId)
-    .map((s) => ({ value: s.id, label: (s.contNo || "(chưa có cont)") + " — " + (s.booking || "(chưa có booking)") }));
+    .map((s) => ({ value: s.id, label: (s.contNo || "(chưa có cont)") + " — " + (s.booking || "(chưa có booking)")
+      + (takenBy[s.id] ? " · đã là cont ra hộ của " + (takenBy[s.id].contNo || ("lô #" + takenBy[s.id].id)) : "") }));
   const raMode = ship.raMode || "self";
   const other = (raMode === "other" && ship.raOtherId != null) ? siblings.find((s) => s.id === ship.raOtherId) : null;
   // Khi "cont khác ra": input giờ ra/BKS ra chỉ ghi vào cont kia (qua patchOther), KHÔNG động vào cont hiện tại.
@@ -328,7 +333,19 @@ function InfoPopup({ ship, patch, patchOther, onSave, isDirty, siblings = [], on
   // "Cont khác ra": giờ ra/BKS nhập ở đây ghi vào field TRANSIENT của LÔ HIỆN TẠI (raOtherGioXeRa/raOtherBksRa)
   // → backend tự đẩy sang cont ra_other_id THEO ID (cập nhật được cả khi cont kia ở trang khác). Cont hiện tại
   // không động vào cột giờ ra. raEdit chỉ để hiển thị tức thời.
-  const setRa = (val) => { if (other) { setRaEdit((e) => ({ ...e, gioXeRa: val })); set({ raOtherGioXeRa: val }); } else set({ gioXeRa: val }); };
+  // Điền giờ ra cho cont đó mà "BKS ra (cont đó)" còn trống → tự lấy BKS vào của lô này (xe vào chính là xe kéo cont kia ra),
+  // cùng quy tắc với "Không cắt móc" (setGioXeRa). Trước chỉ hiện placeholder, không lưu → 9/12 cont ra hộ thật thiếu BKS ra.
+  const setRa = (val) => {
+    if (!other) { set({ gioXeRa: val }); return; }
+    const curBks = String((raEdit.id === other.id ? raEdit.bksRa : other.bksRa) || "").trim();
+    // BKS người dùng vừa gõ ở phiên này thì tôn trọng. Còn giá trị có sẵn của cont CHƯA RA chỉ là xe vào tự điền /
+    // xe ra tay không — chưa phải xe kéo nó ra → thay bằng BKS vào của lô này (lộ trình mới gắn đúng xe kéo).
+    const typed = raEdit.id === other.id && String(raEdit.bksRa || "").trim() !== String(other.bksRa || "").trim();
+    const canFill = !typed && (!curBks || !String(other.gioXeRa || "").trim());
+    const fillBks = (canFill && String(ship.bksVao || "").trim() && String(val || "").trim() && ship.bksVao !== curBks) ? ship.bksVao : null;
+    setRaEdit((e) => ({ ...e, gioXeRa: val, ...(fillBks ? { bksRa: fillBks } : {}) }));
+    set(fillBks ? { raOtherGioXeRa: val, raOtherBksRa: fillBks } : { raOtherGioXeRa: val });
+  };
   const setRaBks = (val) => { if (other) { setRaEdit((e) => ({ ...e, bksRa: val })); set({ raOtherBksRa: val }); } else set({ bksRa: val }); };
   const otherGioXeRa = (other && raEdit.id === other.id) ? raEdit.gioXeRa : (other ? other.gioXeRa || "" : "");
   const otherBksRa = (other && raEdit.id === other.id) ? raEdit.bksRa : (other ? other.bksRa || "" : "");
@@ -539,6 +556,9 @@ function InfoPopup({ ship, patch, patchOther, onSave, isDirty, siblings = [], on
         // Điền giờ ra khi BKS vào đã có sẵn từ trước → cũng lấy luôn BKS đó làm BKS ra (nếu đang trống).
         const setGioXeRa = (x) => set(!String(ship.bksRa || "").trim() && String(ship.bksVao || "").trim() && String(x || "").trim()
           ? { gioXeRa: x, bksRa: ship.bksVao } : { gioXeRa: x });
+        // "Không kéo ra": xe rời đi tay không — xe ra vẫn là xe vào nên BKS ra cũng lấy BKS vào (nếu đang trống).
+        const setGioXeRaXe = (x) => set(!String(ship.bksRa || "").trim() && String(ship.bksVao || "").trim() && String(x || "").trim()
+          ? { gioXeRaXe: x, bksRa: ship.bksVao } : { gioXeRaXe: x });
         const nowBtn = (onClick) => (
           <button type="button" onClick={onClick} title="Điền giờ hiện tại"
             style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)", background: "var(--accent-weak-2)", border: "1px solid var(--accent-weak)", borderRadius: 8, padding: "8px 11px", cursor: "pointer", whiteSpace: "nowrap" }}>Bây giờ</button>
@@ -619,6 +639,12 @@ function InfoPopup({ ship, patch, patchOther, onSave, isDirty, siblings = [], on
                         </>
                       )}
                     </div>
+                    {ship.raOtherId != null && takenBy[ship.raOtherId] && (
+                      <div style={{ fontSize: 11.5, color: "var(--warn)", marginTop: 7, fontWeight: 600, display: "flex", alignItems: "flex-start", gap: 6, lineHeight: 1.5 }}>
+                        <i className="bi bi-exclamation-triangle-fill" style={{ marginTop: 1 }} />
+                        <span>Cont <b>{(other && other.contNo) || ""}</b> đã được lô <b>{takenBy[ship.raOtherId].contNo || ("#" + takenBy[ship.raOtherId].id)}</b> chọn làm cont ra hộ — 1 cont chỉ ra 1 lần, kiểm tra lại lô nào đúng.</span>
+                      </div>
+                    )}
                     {ship.raOtherId == null
                       ? <div style={{ fontSize: 11.5, color: "var(--warn)", marginTop: 7, fontWeight: 500 }}>Chọn cont ra cùng chuyến để nhập giờ ra cho cont đó.</div>
                       : (otherGioXeRa || otherBksRa) && (
@@ -635,8 +661,8 @@ function InfoPopup({ ship, patch, patchOther, onSave, isDirty, siblings = [], on
                   <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 10 }}>
                     <Field label="Giờ xe ra (của XE)" hint="cont vẫn tính chưa ra">
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <div style={{ flex: 1, minWidth: 0 }}><DTField value={ship.gioXeRaXe} onChange={(x) => set({ gioXeRaXe: x })} /></div>
-                        {nowBtn(() => set({ gioXeRaXe: nowLocalDT() }))}
+                        <div style={{ flex: 1, minWidth: 0 }}><DTField value={ship.gioXeRaXe} onChange={setGioXeRaXe} /></div>
+                        {nowBtn(() => setGioXeRaXe(nowLocalDT()))}
                       </div>
                     </Field>
                   </div>

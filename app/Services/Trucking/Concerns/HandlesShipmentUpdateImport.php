@@ -35,14 +35,11 @@ trait HandlesShipmentUpdateImport
     {
         return [
             'gioXeDen'     => ['Giờ xe đến', 'datetime'],
-            // Giờ xe (đầu kéo) ra — CHỈ có hiệu lực cho Free time khi lô ở kiểu "không kéo cont ra".
-            'gioXeRaXe'    => ['Giờ xe ra (xe)', 'datetime'],
             'gioDenDuKien' => ['Giờ đến dự kiến', 'datetime'],
             'io'           => ['Nhập/Xuất', 'io'],
             // Biển số phải khớp danh mục Xe: recompute map vehicle_id bằng so khớp CHUỖI CHÍNH XÁC
             // (TruckingVehicle::where('plate', …)) — gõ sai là lô mất liên kết xe, báo cáo hụt.
             'bksVao'       => ['Biển số vào', 'plate'],
-            'bksRa'        => ['Biển số ra', 'plate'],
             'contNo'       => ['Số cont', 'text'],
             'contType'     => ['Loại cont', 'contType'],
             'inv'          => ['Invoice', 'text'],
@@ -52,24 +49,25 @@ trait HandlesShipmentUpdateImport
             'bargeDrop'    => ['Nơi hạ sà lan', 'bargeDrop'],
             'extVendor'    => ['Nhà xe ngoài', 'extVendor'],
             'infoNote'         => ['Ghi chú', 'text'],
-            // raOtherContNo xử lý riêng qua collectRaOtherChange (không map 1-1 với cột DB).
         ];
-        // Ngoài danh sách trên còn 2 nhóm xử lý RIÊNG (không map 1-1 với 1 cột DB):
+        // Ngoài danh sách trên còn 3 nhóm xử lý RIÊNG (không map 1-1 với 1 cột DB):
         //  - Tờ khai: 2 cột song song SỐ TỜ KHAI / PHÍ TỜ KHAI → cột JSON declarations.
         //  - Cước xe ngoài: ghi vào DÒNG CHI PHÍ src=extTruck, ext_fee tự chốt lại.
+        //  - Khối XE RA (collectRaChange): KIỂU RA · SỐ CONT RA (CẮT MÓC) · GIỜ XE RA · BKS RA — giờ/BKS
+        //    ghi vào cột nào (của cont này, của cont ra hộ, hay của xe) tùy KIỂU RA, đúng như popup.
     }
 
     /** Cột DB tương ứng để đọc giá trị CŨ (dựng diff). */
     private function updatableFieldColumns(): array
     {
         return [
-            'gioXeDen' => 'gio_xe_den', 'gioXeRaXe' => 'gio_xe_ra_xe',
+            'gioXeDen' => 'gio_xe_den',
             'gioDenDuKien' => 'gio_den_du_kien', 'io' => 'io',
-            'bksVao' => 'bks_vao', 'bksRa' => 'bks_ra', 'contNo' => 'cont_no', 'contType' => 'cont_type',
+            'bksVao' => 'bks_vao', 'contNo' => 'cont_no', 'contType' => 'cont_type',
             'inv' => 'inv', 'from' => 'from_loc', 'to' => 'to_loc',
             'kho' => 'kho', 'bargeDrop' => 'barge_drop',
             'extVendor' => 'ext_vendor', 'infoNote' => 'info_note',
-            // raOtherContNo không map 1-1 với cột DB — xử lý riêng trong applyUpdate
+            // Khối XE RA (gioXeRa / bksRa / raOtherContNo) không map cố định — collectRaChange tự chọn cột theo KIỂU RA.
         ];
     }
 
@@ -100,48 +98,19 @@ trait HandlesShipmentUpdateImport
             foreach ($plans as $p) {
                 /** @var TruckingShipment $s */
                 $s = $p['ship'];
-                // Các field xử lý RIÊNG (không đi qua saveShipment):
-                $extFee   = $p['patch']['extFee'] ?? null;
-                $raContNo = $p['patch']['raOtherContNo'] ?? null;
-                $raMode   = $p['patch']['raMode'] ?? null;
-                $only = array_values(array_diff(array_keys($p['patch']), ['extFee', 'raOtherContNo', 'raMode']));
+                // Cước xe ngoài là dòng chi phí riêng. Mọi field còn lại — kể cả raMode / raOtherId (đã chốt THEO ID
+                // lúc kiểm tra) / raOtherGioXeRa / raOtherBksRa — đi qua saveShipment như popup: nó tự đẩy giờ+BKS
+                // sang cont ra hộ theo ra_other_id và recompute cả 2 lô.
+                $extFee = $p['patch']['extFee'] ?? null;
+                $only = array_values(array_diff(array_keys($p['patch']), ['extFee']));
                 $this->saveShipment($p['patch'], $sheet, $s, $only);
                 if ($extFee !== null) $this->applyExtTruckFee($s, (int) $extFee);
-                // Kiểu ra + cont ra: gán ra_mode trước, applyRaOtherContNo gán cont sau.
-                if ($raMode !== null) { $s->ra_mode = $raMode; if ($raMode !== 'other') $s->ra_other_id = null; $s->save(); }
-                if ($raContNo !== null) $this->applyRaOtherContNo($s, $raContNo);
                 $updated++;
                 $cells += count($p['cells']);
             }
         });
 
         return $res + ['updated' => $updated, 'cells' => $cells];
-    }
-
-    /**
-     * Gán liên kết "cont khác ra" theo số cont: tìm lô cùng booking có cont_no khớp.
-     * $contNo = null → xóa liên kết (về ra_mode=self). Chuỗi → tìm sibling.
-     */
-    private function applyRaOtherContNo(TruckingShipment $s, ?string $contNo): void
-    {
-        if ($contNo === null || trim($contNo) === '') {
-            // Xóa liên kết (user gõ --)
-            $s->ra_mode = 'self';
-            $s->ra_other_id = null;
-            $s->save();
-            return;
-        }
-        $contNo = trim($contNo);
-        $sibling = TruckingShipment::where('sheet', $s->sheet)
-            ->where('booking', $s->booking)
-            ->where('id', '!=', $s->id)
-            ->whereRaw('LOWER(cont_no) = ?', [mb_strtolower($contNo)])
-            ->first();
-        if ($sibling) {
-            $s->ra_mode = 'other';
-            $s->ra_other_id = $sibling->id;
-            $s->save();
-        }
     }
 
     /**
@@ -202,15 +171,17 @@ trait HandlesShipmentUpdateImport
             // Nhóm không map 1-1 với cột DB, xử lý sau vòng lặp trên.
             $this->collectDeclarationChange($s, $row, $patch, $cells, $reasons);
             $this->collectExtFeeChange($s, $row, $patch, $cells, $reasons);
-            $this->collectRaOtherChange($s, $row, $patch, $cells, $reasons);
+            $notes = [];   // cảnh báo (không chặn) từ khối XE RA — gắn dòng/lô ở dưới
+            $this->collectRaChange($s, $row, $patch, $cells, $reasons, $notes);
 
             if ($reasons) { $errors[] = $this->updateError($line, $row, $reasons, $s); continue; }
             if (! $cells) { $noChange++; continue; }
 
             $changes[] = ['line' => $line, 'id' => $s->id, 'contNo' => $s->cont_no ?? '', 'booking' => $s->booking ?? '', 'cells' => $cells];
-            $plans[] = ['ship' => $s, 'patch' => $patch, 'cells' => $cells];
+            $plans[] = ['ship' => $s, 'patch' => $patch, 'cells' => $cells, 'line' => $line];
 
             // ----- cảnh báo (không chặn) -----
+            foreach ($notes as $t) $warnings[] = ['line' => $line, 'id' => $s->id, 'text' => $t];
             if (isset($inStatement[$s->id])) {
                 $money = array_intersect(array_column($cells, 'field'), self::MONEY_FIELDS);
                 $warnings[] = ['line' => $line, 'id' => $s->id, 'text' => 'Lô đã nằm trong bảng kê ' . $inStatement[$s->id]
@@ -219,35 +190,31 @@ trait HandlesShipmentUpdateImport
             if (isset($patch['contNo']) && $this->contNoTakenBy($sheet, $patch['contNo'], $s->id)) {
                 $warnings[] = ['line' => $line, 'id' => $s->id, 'text' => "Số cont “{$patch['contNo']}” đang trùng với lô khác"];
             }
-            // Giờ ra điền vào ô KHÔNG có hiệu lực cho Free time (do kiểu giờ ra của lô) → phải nói rõ,
-            // nếu không người dùng tưởng đã cập nhật xong mà Free time không hề đổi.
-            $raMode = $s->ra_mode ?? 'self';
-            if (isset($patch['gioXeRa']) && $raMode !== 'self') {
-                if ($raMode === 'other') {
-                    // Chỉ ĐÍCH DANH lô phải sửa: free time của lô này follow giờ ra của cont kia,
-                    // mà cont kia cũng là 1 lô có ID → sửa ngay ở dòng của nó trong file này.
-                    $o = $s->raOther;
-                    $who = $o ? ('lô #' . $o->id . ($o->cont_no ? ' (cont ' . $o->cont_no . ')' : '')) : 'cont khác (chưa chọn cont nào)';
-                    $warnings[] = ['line' => $line, 'id' => $s->id, 'text' => 'Lô ở kiểu “Cắt móc — cont khác ra”: Free time follow ' . $who
-                        . ' — Giờ xe ra vừa nhập chỉ là giờ ra riêng của cont này, KHÔNG đổi Free time. Muốn đổi Free time thì sửa GIỜ XE RA ở dòng của ' . $who];
-                } else {
-                    $warnings[] = ['line' => $line, 'id' => $s->id,
-                        'text' => 'Lô ở kiểu “Cắt móc — không kéo ra” — Free time lấy cột GIỜ XE RA (XE), không lấy ô này'];
-                }
+        }
+
+        // Cùng 1 giờ ra bị ghi từ 2 dòng: dòng lô B (cắt móc) ghi giờ cho cont A, dòng của chính A cũng ghi
+        // → dòng sau ghi đè dòng trước; phải nói rõ thay vì để người dùng đoán giờ nào được giữ.
+        $writers = [];   // shipment_id nhận giờ ra => [dòng]
+        foreach ($plans as $p) {
+            if (array_key_exists('gioXeRa', $p['patch'])) $writers[$p['ship']->id][] = $p['line'];
+            if (array_key_exists('raOtherGioXeRa', $p['patch'])) {
+                $oid = $p['patch']['raOtherId'] ?? $p['ship']->ra_other_id;
+                if ($oid) $writers[$oid][] = $p['line'];
             }
-            if (isset($patch['gioXeRaXe']) && $raMode !== 'none') {
-                $warnings[] = ['line' => $line, 'id' => $s->id,
-                    'text' => 'Giờ xe ra (xe) chỉ có tác dụng khi lô ở kiểu “Cắt móc — không kéo ra” — lô này đang ở kiểu khác nên Free time không đổi'];
+        }
+        foreach ($writers as $sid => $lines) {
+            if (count($lines) > 1) {
+                $warnings[] = ['line' => end($lines), 'id' => $sid,
+                    'text' => 'Giờ ra của lô #' . $sid . ' được ghi ở ' . count($lines) . ' dòng (' . implode(', ', $lines) . ') — dòng sau ghi đè dòng trước'];
             }
-            // Giờ ra sớm hơn giờ đến: CẢNH BÁO, không chặn — 4% lô thật đang vậy, chủ yếu do
-            // ra_mode='other' (giờ ra hiệu lực nằm ở cont khác). Chỉ nhắc khi người dùng động vào 2 ô này.
-            if (isset($patch['gioXeDen']) || isset($patch['gioXeRa'])) {
-                $den = $patch['gioXeDen'] ?? $this->outDateTime($s->gio_xe_den);
-                $ra  = $patch['gioXeRa']  ?? $this->outDateTime($s->gio_xe_ra);
-                if ($den && $ra && $ra < $den) {
-                    $warnings[] = ['line' => $line, 'id' => $s->id, 'text' => 'Giờ xe ra (' . $this->dtVn($ra) . ') sớm hơn Giờ xe đến (' . $this->dtVn($den) . ')'
-                        . (($s->ra_mode ?? 'self') !== 'self' ? ' — lô này lấy giờ ra từ cont khác nên có thể bình thường' : ' — kiểm tra lại nếu nhập nhầm')];
-                }
+        }
+        // 1 cont chỉ ra 1 lần: 2 dòng trong cùng file chọn cùng 1 cont ra hộ → cả 2 sẽ được lưu, nhưng chỉ 1 dòng đúng.
+        $picked = [];   // id cont ra hộ => [dòng]
+        foreach ($plans as $p) if (! empty($p['patch']['raOtherId'])) $picked[$p['patch']['raOtherId']][] = $p['line'];
+        foreach ($picked as $oid => $lines) {
+            if (count($lines) > 1) {
+                $warnings[] = ['line' => end($lines), 'id' => $oid,
+                    'text' => 'Cont ra hộ (lô #' . $oid . ') được ' . count($lines) . ' dòng (' . implode(', ', $lines) . ') cùng chọn — 1 cont chỉ ra 1 lần, chỉ 1 dòng đúng'];
             }
         }
 
@@ -363,10 +330,18 @@ trait HandlesShipmentUpdateImport
         'other' => 'Cont khác ra',
     ];
 
-    /** Xử lý 2 cột KIỂU RA + SỐ CONT RA (CẮT MÓC). */
-    private function collectRaOtherChange(TruckingShipment $s, array $row, array &$patch, array &$cells, array &$reasons): void
+    /**
+     * Khối XE RA — 4 cột đọc CÙNG NHAU: KIỂU RA · SỐ CONT RA (CẮT MÓC) · GIỜ XE RA · BKS RA.
+     * GIỜ XE RA / BKS RA ghi vào đâu tùy KIỂU RA, đúng như ô nhập của popup:
+     *  - Không cắt móc → giờ ra + BKS ra của CHÍNH cont này (gio_xe_ra / bks_ra).
+     *  - Cont khác ra  → giờ ra + BKS ra của CONT RA HỘ (saveShipment đẩy sang lô ra_other_id qua raOtherGioXeRa/raOtherBksRa).
+     *  - Không kéo ra  → giờ XE (đầu kéo) rời đi (gio_xe_ra_xe) + BKS xe đó (bks_ra); cont vẫn "chưa ra".
+     * BKS RA trống mà vừa điền giờ ra → tự lấy BKS VÀO (xe vào chính là xe ra), cùng quy tắc với popup.
+     * $notes: cảnh báo không chặn — caller gắn dòng/lô.
+     */
+    private function collectRaChange(TruckingShipment $s, array $row, array &$patch, array &$cells, array &$reasons, array &$notes): void
     {
-        $oldMode = $s->ra_mode ?? 'self';
+        $oldMode = $s->ra_mode ?: 'self';
         $oldLabel = self::RA_MODE_LABELS[$oldMode] ?? $oldMode;
 
         // ---- Cột KIỂU RA ----
@@ -384,59 +359,188 @@ trait HandlesShipmentUpdateImport
             if ($newMode !== $oldMode) {
                 $patch['raMode'] = $newMode;
                 $cells[] = ['field' => 'raMode', 'label' => 'Kiểu ra', 'old' => $oldLabel, 'new' => self::RA_MODE_LABELS[$newMode]];
+                // Rời kiểu "Không kéo ra" → giờ XE ra không còn nghĩa, dọn như popup (onPick self/other xóa gioXeRaXe).
+                if ($oldMode === 'none' && $s->gio_xe_ra_xe) {
+                    $patch['gioXeRaXe'] = null;
+                    $cells[] = ['field' => 'gioXeRaXe', 'label' => 'Giờ xe ra (xe)', 'old' => $this->updateOldValue($s, 'gio_xe_ra_xe'), 'new' => ''];
+                }
             }
         }
+        $mode = $newMode ?? $oldMode;
 
-        $effectiveMode = $newMode ?? $oldMode;
+        // ---- Cột SỐ CONT RA (CẮT MÓC) → lô ra hộ hiệu lực sau dòng này ----
+        $n = count($reasons);
+        $other = $this->collectRaOtherCont($s, $row, $mode, $oldMode, $patch, $cells, $reasons, $notes);
+        if (count($reasons) > $n) return;
 
-        // ---- Cột SỐ CONT RA ----
-        $contRaw = trim((string) ($row['values']['raOtherContNo'] ?? ''));
-        if ($contRaw === '' && $effectiveMode !== 'other') return;
+        // ---- Cột GIỜ XE RA + BKS RA: chọn đích theo KIỂU RA ----
+        $gioRaw = trim((string) ($row['values']['gioXeRa'] ?? ''));
+        $bksRaw = trim((string) ($row['values']['bksRa'] ?? ''));
+        if ($gioRaw === '' && $bksRaw === '') return;
 
-        $oldContNo = ($oldMode === 'other' && $s->ra_other_id)
-            ? (TruckingShipment::where('id', $s->ra_other_id)->value('cont_no') ?: '')
-            : '';
-
-        // Chuyển sang self/none → xóa liên kết nếu có
-        if ($effectiveMode !== 'other') {
-            if ($oldContNo !== '') {
-                $patch['raOtherContNo'] = null;
-                $cells[] = ['field' => 'raOtherContNo', 'label' => 'Cont ra (cắt móc)', 'old' => $oldContNo, 'new' => ''];
-            }
+        [$t, $gioKey, $gioCol, $bksKey, $gioLabel, $bksLabel] = match ($mode) {
+            'other' => [$other, 'raOtherGioXeRa', 'gio_xe_ra',    'raOtherBksRa', 'Giờ ra (cont ra hộ)', 'BKS ra (cont ra hộ)'],
+            'none'  => [$s,     'gioXeRaXe',      'gio_xe_ra_xe', 'bksRa',        'Giờ xe ra (xe)',      'BKS ra (xe)'],
+            default => [$s,     'gioXeRa',        'gio_xe_ra',    'bksRa',        'Giờ xe ra (cont này)', 'BKS ra'],
+        };
+        if (! $t) {
+            $reasons[] = 'Kiểu ra "Cont khác ra" nhưng chưa có cont ra hộ — điền SỐ CONT RA (CẮT MÓC) rồi mới điền Giờ xe ra / BKS ra';
             return;
         }
+        if ($t->id !== $s->id) { $gioLabel .= ' ' . $t->cont_no; $bksLabel .= ' ' . $t->cont_no; }   // nói rõ đang ghi cho cont nào
 
-        // other: cần SỐ CONT RA
-        if ($contRaw === '') return;   // giữ nguyên
+        $gioNew = null;   // giờ ra vừa ĐẶT (khác cũ, không phải xóa) — điều kiện để tự điền BKS
+        if ($gioRaw !== '') {
+            $show = trim((string) (($row['raws']['gioXeRa'] ?? '') ?: $gioRaw));
+            $v = $this->normalizeUpdateValue('gioXeRa', 'datetime', $gioRaw, $show, $reasons, $gioLabel);
+            if ($v === false) return;
+            $old = $this->updateOldValue($t, $gioCol);
+            $new = (string) ($v ?? '');
+            if ($new !== $old) {
+                $patch[$gioKey] = $v;
+                $cells[] = ['field' => $gioKey, 'label' => $gioLabel, 'old' => $old, 'new' => $new];
+                $gioNew = $new !== '' ? $new : null;
+            }
+        }
+
+        $oldBks = trim((string) $t->bks_ra);
+        if ($bksRaw !== '') {
+            $v = $this->normalizeUpdateValue('bksRa', 'plate', $bksRaw, $bksRaw, $reasons, $bksLabel);
+            if ($v === false) return;
+            $new = (string) ($v ?? '');
+            if ($new !== $oldBks) {
+                $patch[$bksKey] = $v;
+                $cells[] = ['field' => $bksKey, 'label' => $bksLabel, 'old' => $oldBks, 'new' => $new];
+            }
+        } elseif ($gioNew !== null) {
+            // Xe vào chính là xe ra → BKS ra = BKS VÀO của lô này (BKS vào MỚI nếu vừa sửa ở cùng dòng). Tự điền khi:
+            //  - BKS ra đang trống; hoặc
+            //  - cont ra hộ CHƯA RA: bks_ra cũ của nó chỉ là xe vào tự điền / xe ra tay không, CHƯA phải xe kéo nó ra
+            //    (giữ nguyên là lộ trình gắn nhầm xe kéo); hoặc
+            //  - lô này vừa đổi BKS vào mà BKS ra cũ chính là BKS vào cũ (giá trị tự điền) → đi theo BKS vào mới.
+            // Còn lại giữ nguyên — BKS ra khác BKS vào là người dùng chủ ý ghi xe khác.
+            $bksVao = trim((string) ($patch['bksVao'] ?? $s->bks_vao ?? ''));
+            $oldVao = trim((string) $s->bks_vao);
+            $why = $oldBks === '' ? 'tự lấy BKS vào'
+                : (($t->id !== $s->id && trim((string) $t->getRawOriginal('gio_xe_ra')) === '') ? 'xe kéo cont này ra = BKS vào'
+                : ((array_key_exists('bksVao', $patch) && $oldVao !== '' && strcasecmp($oldBks, $oldVao) === 0) ? 'theo BKS vào mới' : null));
+            if ($why !== null && $bksVao !== '' && strcasecmp($bksVao, $oldBks) !== 0) {
+                $patch[$bksKey] = $bksVao;
+                $cells[] = ['field' => $bksKey, 'label' => $bksLabel . ' (' . $why . ')', 'old' => $oldBks, 'new' => $bksVao];
+            }
+        }
+
+        // ---- Cảnh báo (không chặn) ----
+        if ($gioNew !== null) {
+            $den = $t->id === $s->id ? ($patch['gioXeDen'] ?? $this->outDateTime($t->gio_xe_den)) : $this->outDateTime($t->gio_xe_den);
+            if ($den && $gioNew < $den) {
+                $notes[] = $gioLabel . ' (' . $this->dtVn($gioNew) . ') sớm hơn Giờ xe đến (' . $this->dtVn($den) . ') — kiểm tra lại nếu nhập nhầm';
+            }
+            if ($t->id !== $s->id) {
+                // Giờ ra của cont ra hộ là NGÀY KỲ bảng kê của lô đó — lô đó có thể đã lên bảng kê dù lô này chưa.
+                $st = $this->shipmentsInStatements([$t->id]);
+                if (isset($st[$t->id])) {
+                    $notes[] = 'Cont ra hộ ' . $t->cont_no . ' (lô #' . $t->id . ') đã nằm trong bảng kê ' . $st[$t->id]
+                        . ' — đổi giờ ra làm lệch số đã chốt, vào Bảng kê bấm Tính lại';
+                }
+            }
+        }
+    }
+
+    /**
+     * Cột SỐ CONT RA (CẮT MÓC) → patch['raOtherId'] (null = bỏ liên kết, int = lô ra hộ).
+     * Trả lô ra hộ HIỆU LỰC sau dòng này (vừa chọn hoặc đang liên kết) để giờ/BKS ghi đúng cont; null khi không có.
+     */
+    private function collectRaOtherCont(TruckingShipment $s, array $row, string $mode, string $oldMode, array &$patch, array &$cells, array &$reasons, array &$notes): ?TruckingShipment
+    {
+        $cur = ($oldMode === 'other' && $s->ra_other_id) ? $s->raOther : null;   // eager-load ở resolveUpdateTargets
+        $oldContNo = $cur?->cont_no ?? '';
+        $contRaw = trim((string) ($row['values']['raOtherContNo'] ?? ''));
+
+        // self/none → bỏ liên kết như popup. Có gõ số cont ở kiểu này là nhầm: chặn thay vì lặng lẽ bỏ qua.
+        if ($mode !== 'other') {
+            if ($contRaw !== '' && $contRaw !== self::CLEAR_TOKEN) {
+                $reasons[] = 'Có SỐ CONT RA (CẮT MÓC) "' . $contRaw . '" nhưng Kiểu ra là "' . self::RA_MODE_LABELS[$mode]
+                    . '" — muốn cắt móc kéo cont đó ra thì đặt Kiểu ra = "Cont khác ra", không thì bỏ trống ô này';
+                return null;
+            }
+            if ($s->ra_other_id) {
+                $patch['raOtherId'] = null;
+                if ($oldContNo !== '') $cells[] = ['field' => 'raOtherContNo', 'label' => 'Cont ra (cắt móc)', 'old' => $oldContNo, 'new' => ''];
+            }
+            return null;
+        }
+
+        if ($contRaw === '') return $cur;   // giữ nguyên
 
         if ($contRaw === self::CLEAR_TOKEN) {
-            if ($oldContNo === '') return;
-            $patch['raOtherContNo'] = null;
-            $cells[] = ['field' => 'raOtherContNo', 'label' => 'Cont ra (cắt móc)', 'old' => $oldContNo, 'new' => ''];
-            return;
+            if ($cur) {
+                $patch['raOtherId'] = null;
+                $cells[] = ['field' => 'raOtherContNo', 'label' => 'Cont ra (cắt móc)', 'old' => $oldContNo, 'new' => ''];
+            }
+            return null;
         }
 
-        if (mb_strtolower($contRaw) === mb_strtolower($oldContNo)) return;
+        if (mb_strtolower($contRaw) === mb_strtolower($oldContNo)) return $cur;
 
-        // Cắt móc = xe kéo cont của lô KHÁC cùng booking ra. Điền chính cont của lô này là nhầm cột.
+        // Cắt móc = xe kéo cont của lô KHÁC ra. Điền chính cont của lô này là nhầm cột.
         if (mb_strtolower($contRaw) === mb_strtolower((string) $s->cont_no)) {
-            $reasons[] = 'Số cont ra "' . $contRaw . '" là cont của CHÍNH lô này — cột này cần cont của lô KHÁC cùng booking. '
+            $reasons[] = 'Số cont ra "' . $contRaw . '" là cont của CHÍNH lô này — cột này cần cont của lô KHÁC. '
                 . 'Xe kéo lại chính cont này thì để Kiểu ra = "Không cắt móc" và bỏ trống ô Số cont ra.';
-            return;
+            return null;
         }
 
-        $sibling = TruckingShipment::where('sheet', $s->sheet)
-            ->where('booking', $s->booking)
-            ->where('id', '!=', $s->id)
-            ->whereRaw('LOWER(cont_no) = ?', [mb_strtolower($contRaw)])
-            ->first();
-        if (! $sibling) {
-            $reasons[] = 'Số cont ra "' . $contRaw . '" không khớp lô nào cùng booking "' . $s->booking . '"';
-            return;
-        }
+        $sibling = $this->resolveRaOtherSibling($s, $contRaw, $reasons, $notes);
+        if (! $sibling) return null;
 
-        $patch['raOtherContNo'] = $contRaw;
+        $patch['raOtherId'] = $sibling->id;
         $cells[] = ['field' => 'raOtherContNo', 'label' => 'Cont ra (cắt móc)', 'old' => $oldContNo, 'new' => $sibling->cont_no];
+        return $sibling;
+    }
+
+    /**
+     * Tìm lô "ra hộ" theo SỐ CONT — đúng 2 điều kiện: cont khớp VÀ lô đó CHƯA RA (chưa có Giờ xe ra).
+     * KHÔNG ràng buộc cùng booking: xe cắt móc kéo cont của booking khác ra là chuyện bình thường, và ô
+     * chọn ở popup Lô hàng cũng liệt kê mọi cont chưa ra của sheet (siblingsList) chứ không lọc theo booking.
+     * Trả null kèm lý do khi cont không có, cont đã ra, hoặc trùng ở nhiều lô chưa ra.
+     * Cont đã là "cont ra hộ" của lô khác → vẫn nhận nhưng CẢNH BÁO qua $notes (1 cont chỉ ra 1 lần).
+     */
+    private function resolveRaOtherSibling(TruckingShipment $s, string $contNo, array &$reasons, array &$notes): ?TruckingShipment
+    {
+        $cands = TruckingShipment::where('sheet', $s->sheet)
+            ->where('id', '!=', $s->id)
+            ->whereRaw('LOWER(cont_no) = ?', [mb_strtolower($contNo)])
+            ->get(['id', 'booking', 'cont_no', 'bks_ra', 'gio_xe_ra', 'gio_xe_den']);   // bks_ra/gio_xe_den: dựng diff + cảnh báo giờ ra
+
+        if ($cands->isEmpty()) {
+            $reasons[] = 'Số cont ra "' . $contNo . '" không khớp lô nào trong danh sách';
+            return null;
+        }
+
+        // "Đã ra" = cont đó có Giờ xe ra của chính nó. Đọc giá trị THÔ để chuỗi rỗng không bị cast datetime nuốt.
+        $free = $cands->filter(fn ($c) => trim((string) $c->getRawOriginal('gio_xe_ra')) === '')->values();
+        $bk = fn ($c) => $c->booking !== null && $c->booking !== '' ? $c->booking : '(trống)';
+
+        if ($free->isEmpty()) {
+            $reasons[] = 'Số cont ra "' . $contNo . '" là lô ĐÃ RA (booking "' . $bk($cands->first())
+                . '") — cont đã có Giờ xe ra thì không ra hộ lô khác được nữa';
+            return null;
+        }
+        if ($free->count() > 1) {
+            $reasons[] = 'Số cont ra "' . $contNo . '" đang trùng ở ' . $free->count() . ' lô chưa ra (booking: '
+                . implode(', ', $free->map($bk)->all()) . ') — sửa cho hết trùng rồi import lại';
+            return null;
+        }
+        $hit = $free->first();
+
+        // 1 cont chỉ ra 1 lần: đã là cont ra hộ của lô khác thì CẢNH BÁO, không chặn — có thể lô kia mới là lô chọn nhầm.
+        $taken = TruckingShipment::where('ra_mode', 'other')->where('ra_other_id', $hit->id)
+            ->where('id', '!=', $s->id)->first(['id', 'cont_no']);
+        if ($taken) {
+            $notes[] = 'Cont ' . $hit->cont_no . ' đã được lô #' . $taken->id . ($taken->cont_no ? ' (cont ' . $taken->cont_no . ')' : '')
+                . ' chọn làm cont ra hộ — 1 cont chỉ ra 1 lần, kiểm tra lại lô nào đúng';
+        }
+        return $hit;
     }
 
     /** Chuẩn hóa + kiểm tra 1 ô. Trả giá trị đã chuẩn hóa (null = xóa), hoặc false nếu lỗi. */
@@ -550,7 +654,7 @@ trait HandlesShipmentUpdateImport
             ->filter()->unique()->values();
 
         // raOther: lô "cont khác ra" trỏ tới — cần để chỉ đúng lô phải sửa giờ ra (xem cảnh báo bên dưới).
-        $with = ['raOther:id,cont_no,booking'];
+        $with = ['raOther:id,cont_no,booking,bks_ra,gio_xe_ra,gio_xe_den'];   // cont ra hộ đang liên kết: đích của GIỜ XE RA / BKS RA khi Cont khác ra
         $byId = $ids->isEmpty() ? collect() : TruckingShipment::ofSheet($sheet)->with($with)->whereIn('id', $ids->all())->get()->keyBy('id');
         $byCont = $conts->isEmpty() ? collect() : TruckingShipment::ofSheet($sheet)->with($with)
             ->whereIn(DB::raw('UPPER(cont_no)'), $conts->all())->get()

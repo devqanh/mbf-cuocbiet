@@ -235,15 +235,18 @@ const UPD_FIELDS = [
   { key: "io",           col: "NHẬP/XUẤT",       kw: ["nhập/xuất", "nhap/xuat", "nhập", "xuất"] },
   { key: "gioDenDuKien", col: "GIỜ ĐẾN DỰ KIẾN", kw: ["dự kiến", "du kien"], dt: true },
   { key: "gioXeDen",     col: "GIỜ XE ĐẾN",      kw: ["xe đến", "xe den"], dt: true },
-  // Giờ xe ra (xe): chỉ dùng khi lô ở kiểu "không kéo cont ra" — free time lấy giờ ra của XE.
-  { key: "gioXeRaXe",    col: "GIỜ XE RA (XE)",  kw: ["xe ra (xe)", "ra cua xe", "ra (xe)"], dt: true },
   { key: "bksVao",       col: "BKS VÀO",         kw: ["bks vào", "bks vao", "biển số vào"] },
-  { key: "bksRa",        col: "BKS RA",          kw: ["bks ra", "biển số ra"] },
-  // Kiểu ra: "Không cắt móc" / "Không kéo ra" / "Cont khác ra" — trống = giữ nguyên.
-  { key: "raMode",         col: "KIỂU RA",           kw: ["kiểu ra", "kieu ra"] },
-  // Cắt móc — cont khác ra: điền SỐ CONT ra → hệ thống tìm lô cùng booking khớp cont đó, tự gán liên kết.
-  // Chỉ dùng khi KIỂU RA = "Cont khác ra". Để trống = giữ nguyên; gõ -- = bỏ liên kết.
+  // ---- Khối XE RA: 4 cột đọc CÙNG NHAU, theo đúng thứ tự thao tác ở popup: KIỂU RA → (cont ra hộ) → giờ → BKS.
+  // Kiểu ra: "Không cắt móc" / "Cont khác ra" / "Không kéo ra" — trống = giữ nguyên.
+  { key: "raMode",        col: "KIỂU RA",              kw: ["kiểu ra", "kieu ra"] },
+  // Cont khác ra: điền SỐ CONT ra hộ → backend tìm lô CHƯA RA khớp cont đó (booking nào cũng được), gán liên kết.
+  // Để trống = giữ nguyên; gõ -- = bỏ liên kết.
   { key: "raOtherContNo", col: "SỐ CONT RA (CẮT MÓC)", kw: ["cont ra", "cắt móc", "cat moc"] },
+  // GIỜ XE RA + BKS RA hiểu theo KIỂU RA (như ô nhập của popup): Không cắt móc → của chính cont này ·
+  // Cont khác ra → của CONT RA HỘ (ghi sang lô cont đó) · Không kéo ra → giờ/BKS của XE (đầu kéo).
+  // BKS RA trống + có giờ ra mới → backend tự lấy BKS VÀO. Xuất: giờ ra HIỆU LỰC theo kiểu ra (gioXeRaEff).
+  { key: "gioXeRa",       col: "GIỜ XE RA",            kw: ["xe ra", "giờ ra", "gio ra"], dt: true },
+  { key: "bksRa",         col: "BKS RA",               kw: ["bks ra", "biển số ra"] },
   // Nhiều tờ khai / lô: 2 cột SONG SONG theo thứ tự (giữ 1 dòng/lô cho dễ sửa hàng loạt).
   { key: "inv",          col: "INVOICE",         kw: ["invoice", "inv"] },
   { key: "from",         col: "NƠI LẤY",         kw: ["lấy", "lay"] },
@@ -268,14 +271,16 @@ const dtOut = (iso) => {
 // vì import chặn giá trị ngoài danh mục — người sửa file phải tra được ngay trong file.
 export function buildUpdateWb(list, c) {
   c = c || {};
-  // Map id → contNo cho tra cứu cont ra (cắt móc)
-  const idContMap = {};
-  (list || []).forEach((s) => { if (s.id && s.contNo) idContMap[s.id] = s.contNo; });
   const val = (s, k) => {
     if (k === "id") return s.id;
     if (k === "infoNote") return s.infoNote || "";
     if (k === "raMode") return ({ self: "Không cắt móc", other: "Cont khác ra", none: "Không kéo ra" })[s.raMode || "self"] || "";
-    if (k === "raOtherContNo") return (s.raMode === "other" && s.raOtherId) ? (idContMap[s.raOtherId] || "") : "";
+    // Số cont ra hộ lấy thẳng từ payload (raOtherContNo), KHÔNG tra theo id trong `list`:
+    // lô ra hộ đã ra rồi nên thường không nằm trong tập xuất → tra theo id là ra ô trống.
+    if (k === "raOtherContNo") return s.raMode === "other" ? (s.raOtherContNo || "") : "";
+    // Giờ ra HIỆU LỰC theo kiểu ra (self→cont này · other→cont ra hộ · none→xe) — backend tính sẵn, cũng là giờ Free time.
+    if (k === "gioXeRa") return s.gioXeRaEff || "";
+    if (k === "bksRa") return s.raMode === "other" ? (s.raOtherBksRa || "") : (s.bksRa || "");
     const v = s[k];
     return v == null ? "" : v;
   };
@@ -302,9 +307,10 @@ export function buildUpdateWb(list, c) {
     { "Quy tắc": "Ô để trống", "Ý nghĩa": "GIỮ NGUYÊN giá trị đang có — không xóa dữ liệu" },
     { "Quy tắc": `Gõ ${CLEAR_TOKEN}`, "Ý nghĩa": "XÓA giá trị của ô đó" },
     { "Quy tắc": "Ngày giờ", "Ý nghĩa": "Cột giờ: dd/mm/yyyy HH:MM (vd 29/06/2026 21:45) · Cột ngày: dd/mm/yyyy" },
-    { "Quy tắc": "KIỂU RA", "Ý nghĩa": "3 giá trị: Không cắt móc (xe vào kéo cont ra) · Không kéo ra (cắt móc, xe ra tay không) · Cont khác ra (cắt móc, xe kéo cont khác). Để trống = giữ nguyên" },
-    { "Quy tắc": "SỐ CONT RA (CẮT MÓC)", "Ý nghĩa": "Dùng khi KIỂU RA = Cont khác ra: điền SỐ CONT lô ra cùng booking. Hệ thống tự tìm + gán liên kết. Gõ -- = bỏ liên kết" },
-    { "Quy tắc": "GIỜ XE RA (XE)", "Ý nghĩa": "Dùng khi KIỂU RA = Không kéo ra: giờ xe (đầu kéo) rời đi. Free time lấy giờ này" },
+    { "Quy tắc": "KIỂU RA", "Ý nghĩa": "3 giá trị: Không cắt móc (xe vào kéo luôn cont này ra) · Cont khác ra (cắt móc, xe kéo cont khác ra) · Không kéo ra (cắt móc, xe ra tay không). Để trống = giữ nguyên" },
+    { "Quy tắc": "SỐ CONT RA (CẮT MÓC)", "Ý nghĩa": "Chỉ khi KIỂU RA = Cont khác ra: số cont của lô ra thay. Hệ thống tìm theo 2 điều kiện — đúng số cont VÀ lô đó CHƯA RA (booking nào cũng được) — rồi tự gán liên kết. Gõ -- = bỏ liên kết" },
+    { "Quy tắc": "GIỜ XE RA", "Ý nghĩa": "Hiểu theo KIỂU RA, giống ô nhập trong popup: Không cắt móc → giờ ra của chính cont này · Cont khác ra → giờ ra của CONT RA HỘ (ghi sang lô cont đó) · Không kéo ra → giờ xe (đầu kéo) rời đi. Đây cũng là giờ tính Free time" },
+    { "Quy tắc": "BKS RA", "Ý nghĩa": "Cũng hiểu theo KIỂU RA như GIỜ XE RA. Để trống mà có điền giờ ra → tự lấy BKS VÀO (xe vào chính là xe ra). Chỉ gõ khi xe ra là xe khác" },
     { "Quy tắc": "Tờ khai", "Ý nghĩa": "KHÔNG sửa ở file này — 1 lô có thể nhiều tờ khai, mỗi tờ khai một phí mở, nên có luồng riêng: nút Cập nhật tờ khai ở trang Lô hàng" },
     { "Quy tắc": "CƯỚC XE NGOÀI", "Ý nghĩa": "Chỉ dùng khi thuê xe ngoài — ghi vào dòng chi phí Cước xe ngoài của lô (các khoản chi phí khác không bị đụng). Phải có NHÀ XE NGOÀI mới nhập được cước" },
     { "Quy tắc": "Cột ánh xạ danh mục", "Ý nghĩa": "Nơi lấy · Nơi hạ · Kho · Loại cont · Nhà xe ngoài · BKS vào/ra — chỉ nhận giá trị CÓ SẴN trong danh mục Cài đặt (xem các sheet hợp lệ trong file này). Sai là báo lỗi, hệ thống KHÔNG tự thêm" },
@@ -334,9 +340,9 @@ export function buildUpdateWb(list, c) {
   addSheet("Nhà xe ngoài hợp lệ", (c.extVendors || []).map((n) => ({ "Đơn vị xe ngoài": n })), ["Đơn vị xe ngoài"], [34]);
   addSheet("Biển số hợp lệ", (c.vehicles || []).map((n) => ({ "Biển số": n })), ["Biển số"], [18]);
   addSheet("Kiểu ra hợp lệ", [
-    { "Giá trị": "Không cắt móc", "Ý nghĩa": "Xe vào kéo luôn chính cont này ra (mặc định)" },
-    { "Giá trị": "Không kéo ra", "Ý nghĩa": "Cắt móc, xe ra tay không — điền GIỜ XE RA (XE)" },
-    { "Giá trị": "Cont khác ra", "Ý nghĩa": "Cắt móc, xe kéo cont khác — điền SỐ CONT RA" },
+    { "Giá trị": "Không cắt móc", "Ý nghĩa": "Xe vào kéo luôn chính cont này ra (mặc định) — GIỜ XE RA / BKS RA là của cont này" },
+    { "Giá trị": "Cont khác ra", "Ý nghĩa": "Cắt móc, xe kéo cont khác ra — điền SỐ CONT RA (CẮT MÓC); GIỜ XE RA / BKS RA ghi cho cont đó" },
+    { "Giá trị": "Không kéo ra", "Ý nghĩa": "Cắt móc, xe ra tay không — GIỜ XE RA là giờ xe (đầu kéo) rời đi, cont vẫn chưa ra" },
   ], ["Giá trị", "Ý nghĩa"], [20, 55]);
   addSheet("Sà lan hợp lệ", (c.locations || []).filter((n) => BARGE_DROPS.includes(locCode[n])).map((n) => ({ "Tên địa điểm": n, "Ký hiệu": locCode[n] || "" })), ["Tên địa điểm", "Ký hiệu"], [22, 10]);
   return wb;
