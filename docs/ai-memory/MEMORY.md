@@ -30,7 +30,7 @@
 - [Chi lái ở Lộ trình](route-pays-lo-trinh.md) — phí tuyến chọn Cảng+Kho, "chi theo ngày" tổng hợp theo xe/ngày, lương 4 mức (kéo×CRU), repeater chi khác; bảng trucking_route_pays (chỉ lưu lái nhận + đã chi)
 - [JSON schema evolution](json-schema-evolution.md) — cột JSON phải tiến hóa tương thích ngược: chỉ thêm trường tùy chọn + đọc kèm default; không đổi tên/kiểu trường cũ
 - [Kỳ lương lái xe](payroll-period-plan.md) — ĐÃ build; /phi-xe gom theo BIỂN SỐ XE qua khoảng ngày; chưa-chi-theo-ngày=lương phải trả, chi-theo-ngày=đã trả; bảng trucking_payroll_periods; có chốt+tính lại+lương phát sinh+đợt thanh toán
-- [Báo cáo chi phí](cost-report.md) — /bao-cao báo cáo tháng P&L + cơ cấu chi phí (donut SVG tự vẽ) + chi phí theo xe; monthlyCostReport gộp 4 nguồn, chỉ đọc
+- [Báo cáo chi phí](cost-report.md) — /bao-cao P&L tháng 4 tab (Tổng quan/Đội xe/Khách/Xu hướng); DOANH THU = định giá theo BẢNG GIÁ từng lô (revenue_lines rỗng!) + cảnh báo lô chưa khớp; so tháng trước tải ngầm ở FE; chi phí 4 nhóm; bỏ phiếu hủy; UI chung components/report-ui.jsx
 - [Verify không phá data](verify-no-destructive-save.md) — đừng gọi saveCatalog/reconcile thật khi test (nó xóa dòng thiếu trong payload); dùng transaction rollback / chỉ test hàm đọc
 - [Phân quyền hệ thống](permissions-system.md) — Spatie; /roles liệt kê Permission DB + config/permissions.php; KHÔNG có Gate::before nên thêm quyền phải gán tường minh (migration); đã tách tripCost/fleet/tracking/tasks.update+delete
 - [Lộ trình chuyến](route-trips.md) — trang /lo-trinh: 1 lộ trình/xe/ngày vận hành 08:00→08:00, timeline xe vào/ra+số cont, gom theo bks_vao + ra_mode (self/none/other), dedup cont kéo khác ra; command trucking:seed-routes test
@@ -45,3 +45,4 @@
 - [Khoản chi phí auto + VAT](cost-item-auto-vat.md) — cờ "auto" (tự hiện popup + nhắc chưa-điền-số-HĐ mọi lô) và VAT% (chi phí net = số tiền ÷ (1+vat)) cho danh mục Khoản chi phí
 - [Import CSHT](csht-import.md) — nút /lo-hang import phí CSHT + Số tiền thanh lý vào chi phí lô theo số cont (khoản CSHT/Thanh lí); ghi đè khi import lại, đối chiếu Nhập/Xuất; thêm cột Ghi chú vào chi phí lô hàng
 - [Lệch ngày ô Excel](excel-date-cell-skew.md) — ô ngày/giờ kiểu Date của Excel đọc bằng SheetJS lệch ~30s ở múi VN (lùi 1 ngày / hụt 1 phút); parser client phải snapToMinute
+- [Báo cáo tài sản 3 tab](asset-report.md) — /bao-cao-tai-san: Tổng quan (KPI so kỳ trước, xu hướng tháng, cơ cấu theo TÊN khoản vì cost_type_id không ai điền, top xe, cảnh báo) · Chi tiết theo xe · Sổ tài sản khấu hao đến hôm nay; Donut chung ở components/charts.jsx
