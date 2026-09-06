@@ -14,6 +14,7 @@ window.__TRK = {
   routes: {
     data:  '{{ route("trucking2.assetReport.data") }}',
     fleet: '{{ url("trucking-v2/quan-ly-xe") }}',   // deep-link xe: #<hashid>/cost
+    costManagement: '{{ route("trucking2.costManagement") }}',   // phiếu chi chờ duyệt/thanh toán
   },
   boot: @json($boot),
 };

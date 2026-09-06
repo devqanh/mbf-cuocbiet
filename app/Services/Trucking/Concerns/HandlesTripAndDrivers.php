@@ -997,12 +997,36 @@ trait HandlesTripAndDrivers
     // ===================================================================
 
     /**
+     * DOANH THU của 1 lô cho báo cáo = giá theo BẢNG GIÁ (cước + dầu + sà lan) — CÙNG công thức với cột
+     * "Thu phí" ở Lô hàng và bảng kê (1 nguồn công thức). Lô KHÔNG khớp bảng giá → dùng doanh thu NHẬP TAY
+     * (revenue_lines kind=doanhThu) nếu có; không có nữa → 0 và tính là "chưa khớp". KHÔNG cộng cả 2 để tránh trùng.
+     * (Bảng revenue_lines thực tế gần như không ai nhập → trước đây P&L luôn báo doanh thu 0.)
+     * $s cần eager-load costLines + revenueLines + customer. $date = ngày cont ra (Y-m-d).
+     *
+     * @return array{amount:int, source:string} source = price | manual | none
+     */
+    private function reportShipmentRevenue(TruckingShipment $s, string $date): array
+    {
+        $pr = $this->priceShipment($s, $this->pricingContextForDate($s->customer_id ? (int) $s->customer_id : null, $s->customer?->name, $date));
+        if ($pr['matched']) {
+            $amt = (int) $pr['cuoc'] + (int) $pr['dau'] + (int) ($pr['bargeCuoc'] ?? 0) + (int) ($pr['bargeDau'] ?? 0);
+            return ['amount' => $amt, 'source' => 'price'];
+        }
+        $manual = (int) round((float) $s->revenueLines->where('kind', 'doanhThu')->sum('amount'));
+        return ['amount' => $manual, 'source' => $manual ? 'manual' : 'none'];
+    }
+
+    /** Nhãn 4 NHÓM chi phí lớn của báo cáo (sếp nhìn nhóm trước, khoản chi tiết sau). */
+    private const COST_GROUPS = ['driver' => 'Lương & vận hành lái xe', 'vehicle' => 'Chi phí xe', 'asset' => 'Chi phí tài sản', 'shipment' => 'Chi phí lô hàng'];
+
+    /**
      * Báo cáo chi phí công ty theo THÁNG: Doanh thu − Chi phí = Lợi nhuận, cơ cấu chi phí theo
-     * loại, chi phí theo xe (+ chi phí/chuyến). Gộp 4 nguồn (không trùng nhau theo thiết kế):
-     *  1) Doanh thu = revenue_lines(doanhThu) của lô có Giờ xe ra trong tháng.
+     * loại (gom 4 nhóm lớn → khoản), chi phí theo xe (+ chi phí/chuyến), doanh thu theo khách.
+     * Gộp 4 nguồn (không trùng nhau theo thiết kế):
+     *  1) Doanh thu = lô có Giờ xe ra trong tháng, định giá theo bảng giá (xem reportShipmentRevenue).
      *  2) Lương & vận hành lái xe = route-pay (dầu/lương/cầu đường/trợ cấp/phát sinh) — loop ngày.
-     *  3) Chi phí xe = vehicle_costs theo spend_date (sửa chữa/khấu hao…).
-     *  4) Chi phí lô hàng = cost_lines KHÔNG phải chi hộ (billable=false).
+     *  3) Chi phí xe / tài sản = vehicle_costs theo spend_date (bỏ phiếu đã hủy).
+     *  4) Chi phí lô hàng = cost_lines KHÔNG phải chi hộ (billable=false), số NET.
      */
     public function monthlyCostReport(int $year, int $month): array
     {
@@ -1010,14 +1034,25 @@ trait HandlesTripAndDrivers
         $end   = $start->copy()->endOfMonth();
         $s = $start->format('Y-m-d'); $e = $end->format('Y-m-d');
 
-        // 1) Doanh thu + sản lượng (lô có Giờ xe ra trong tháng)
-        $shipIds = TruckingShipment::whereNotNull('gio_xe_ra')
-            ->whereDate('gio_xe_ra', '>=', $s)->whereDate('gio_xe_ra', '<=', $e)->pluck('id');
-        $revenue = (int) round((float) TruckingRevenueLine::whereIn('shipment_id', $shipIds)->where('kind', 'doanhThu')->sum('amount'));
+        // 1) Lô có Giờ xe ra trong tháng → doanh thu (bảng giá) + sản lượng + khách hàng
+        $ships = TruckingShipment::whereNotNull('gio_xe_ra')
+            ->whereDate('gio_xe_ra', '>=', $s)->whereDate('gio_xe_ra', '<=', $e)
+            ->with(['costLines', 'revenueLines', 'customer:id,name', 'raOther:id,gio_xe_ra'])
+            ->get();
+        $shipIds = $ships->pluck('id');
+        $revenue = 0; $revManual = 0; $unmatched = 0;
+        $revByShip = []; $srcByShip = [];
+        foreach ($ships as $sh) {
+            $r = $this->reportShipmentRevenue($sh, substr($this->outDate($sh->gio_xe_ra), 0, 10));
+            $revByShip[$sh->id] = $r['amount']; $srcByShip[$sh->id] = $r['source'];
+            $revenue += $r['amount'];
+            if ($r['source'] === 'manual') $revManual += $r['amount'];
+            if ($r['source'] === 'none') $unmatched++;
+        }
 
-        $cat = [];                 // label => amount (cơ cấu chi phí)
-        $byPlate = [];             // bks => ['cost'=>, 'trips'=>]
-        $addCat = function ($label, $amt) use (&$cat) { $amt = (int) round((float) $amt); if ($amt) $cat[$label] = ($cat[$label] ?? 0) + $amt; };
+        $cat = []; $catGroup = [];   // label => amount (cơ cấu chi phí) ; label => nhóm lớn
+        $byPlate = [];               // bks => ['cost'=>, 'trips'=>]
+        $addCat = function ($label, $amt, string $group) use (&$cat, &$catGroup) { $amt = (int) round((float) $amt); if ($amt) { $cat[$label] = ($cat[$label] ?? 0) + $amt; $catGroup[$label] = $group; } };
         $addPlate = function ($bks, $amt) use (&$byPlate) { $bks = $bks ?: '—'; $byPlate[$bks] ??= ['cost' => 0, 'trips' => 0]; $byPlate[$bks]['cost'] += (int) round((float) $amt); };
 
         // 2) Lương & vận hành lái xe (route-pay) — loop từng ngày trong tháng
@@ -1032,21 +1067,21 @@ trait HandlesTripAndDrivers
                     $totalTrips++; $byPlate[$bks] ??= ['cost' => 0, 'trips' => 0]; $byPlate[$bks]['trips']++;
                     foreach (array_merge($g['items'] ?? [], $g['payrollItems'] ?? []) as $it) {
                         $label = $catMap[$it['key'] ?? ''] ?? 'Phát sinh chuyến';
-                        $addCat($label, $it['amount'] ?? 0); $addPlate($bks, $it['amount'] ?? 0);
+                        $addCat($label, $it['amount'] ?? 0, 'driver'); $addPlate($bks, $it['amount'] ?? 0);
                     }
-                    foreach ($g['manual'] ?? [] as $m) { $addCat('Phát sinh chuyến', $m['amount'] ?? 0); $addPlate($bks, $m['amount'] ?? 0); }
+                    foreach ($g['manual'] ?? [] as $m) { $addCat('Phát sinh chuyến', $m['amount'] ?? 0, 'driver'); $addPlate($bks, $m['amount'] ?? 0); }
                     // Dầu = chi phí CÔNG TY (tách khỏi tiền lái nhưng VẪN là chi phí của xe).
-                    if (! empty($g['fuel'])) { $addCat('Dầu', $g['fuel']['amount'] ?? 0); $addPlate($bks, $g['fuel']['amount'] ?? 0); }
+                    if (! empty($g['fuel'])) { $addCat('Dầu', $g['fuel']['amount'] ?? 0, 'driver'); $addPlate($bks, $g['fuel']['amount'] ?? 0); }
                 }
             }
         }
 
-        // 3) Chi phí xe / tài sản (vehicle_costs) theo spend_date — NHÓM THEO THAM CHIẾU loại
-        //    chi phí (cost_type_id) phân giải theo ĐÚNG NGUỒN (xe → "Loại chi phí xe";
+        // 3) Chi phí xe / tài sản (vehicle_costs) theo spend_date, BỎ phiếu đã hủy — NHÓM THEO THAM CHIẾU
+        //    loại chi phí (cost_type_id) phân giải theo ĐÚNG NGUỒN (xe → "Loại chi phí xe";
         //    tài sản → "Loại chi phí tài sản"); fallback tên chuỗi khi chưa gắn danh mục.
         $vehTypeName   = \App\Models\TruckingVehicleCostType::pluck('name', 'id');
         $assetTypeName = \App\Models\TruckingAssetCostType::pluck('name', 'id');
-        foreach (TruckingVehicleCost::with('vehicle:id,plate,kind')->whereNotNull('spend_date')
+        foreach (TruckingVehicleCost::with('vehicle:id,plate,kind')->whereNull('cancelled_at')->whereNotNull('spend_date')
             ->whereDate('spend_date', '>=', $s)->whereDate('spend_date', '<=', $e)->get() as $vc) {
             $isAsset = (($vc->vehicle?->kind) ?? 'vehicle') === 'asset';
             $type = $vc->cost_type_id
@@ -1054,67 +1089,98 @@ trait HandlesTripAndDrivers
                 : null;
             $type  = $type ?: (trim((string) $vc->name) ?: null);
             $label = ($isAsset ? 'Chi phí tài sản' : 'Chi phí xe') . ($type !== null ? ' · ' . $type : '');
-            $addCat($label, $vc->amount); $addPlate($vc->vehicle?->plate ?? '—', $vc->amount);
+            $addCat($label, $vc->amount, $isAsset ? 'asset' : 'vehicle'); $addPlate($vc->vehicle?->plate ?? '—', $vc->amount);
         }
 
         // 4) Chi phí lô hàng (cost_lines, KHÔNG tính chi hộ khách) — dùng số NET (đã trừ VAT).
         foreach (TruckingCostLine::whereIn('shipment_id', $shipIds)
             ->where(fn ($q) => $q->where('billable', false)->orWhereNull('billable'))->get(['item', 'amount', 'vat']) as $cl) {
-            $addCat('Chi phí lô · ' . (trim((string) $cl->item) ?: 'khác'), $cl->netAmount());
+            $addCat('Chi phí lô · ' . (trim((string) $cl->item) ?: 'khác'), $cl->netAmount(), 'shipment');
         }
 
-        // Doanh thu theo XE + sản lượng theo TUYẾN/KHO (từ lô trong tháng)
-        $ships = TruckingShipment::whereIn('id', $shipIds)->get(['id', 'vehicle_id', 'bks_vao', 'from_loc', 'to_loc', 'kho']);
+        // Doanh thu theo XE + KHÁCH + sản lượng theo TUYẾN/KHO (từ lô trong tháng)
         $vehPlate = TruckingVehicle::whereIn('id', $ships->pluck('vehicle_id')->filter()->unique())->pluck('plate', 'id');
-        $revByShip = TruckingRevenueLine::whereIn('shipment_id', $shipIds)->where('kind', 'doanhThu')
-            ->selectRaw('shipment_id, SUM(amount) amt')->groupBy('shipment_id')->pluck('amt', 'shipment_id');
-        $byRoute = []; $byKho = [];
+        $byRoute = []; $byKho = []; $byCust = [];
         foreach ($ships as $sh) {
             $plate = trim((string) ($sh->vehicle_id ? ($vehPlate[$sh->vehicle_id] ?? $sh->bks_vao) : $sh->bks_vao)) ?: '—';
             $byPlate[$plate] ??= ['cost' => 0, 'trips' => 0];
             if ($sh->vehicle_id && ! isset($byPlate[$plate]['vehicleId'])) $byPlate[$plate]['vehicleId'] = (int) $sh->vehicle_id;
-            $byPlate[$plate]['revenue'] = ($byPlate[$plate]['revenue'] ?? 0) + (int) round((float) ($revByShip[$sh->id] ?? 0));
+            $byPlate[$plate]['revenue'] = ($byPlate[$plate]['revenue'] ?? 0) + (int) ($revByShip[$sh->id] ?? 0);
             $byPlate[$plate]['conts'] = ($byPlate[$plate]['conts'] ?? 0) + 1;
             $rk = trim(($sh->from_loc ?? '') . ' → ' . ($sh->to_loc ?? ''), ' →') ?: '(chưa rõ)';
             $byRoute[$rk] = ($byRoute[$rk] ?? 0) + 1;
             foreach ($this->khoPoints($sh->kho) ?: ['(không kho)'] as $kp) { $byKho[$kp] = ($byKho[$kp] ?? 0) + 1; }
+            $cn = trim((string) ($sh->customer?->name ?? '')) ?: '(chưa có khách)';
+            $byCust[$cn] ??= ['label' => $cn, 'customerId' => $sh->customer_id ? (int) $sh->customer_id : null, 'revenue' => 0, 'conts' => 0, 'unmatched' => 0];
+            $byCust[$cn]['revenue'] += (int) ($revByShip[$sh->id] ?? 0);
+            $byCust[$cn]['conts']++;
+            if (($srcByShip[$sh->id] ?? 'none') === 'none') $byCust[$cn]['unmatched']++;
         }
 
         $totalCost = array_sum($cat);
         arsort($cat);
         $costByCategory = [];
         foreach ($cat as $label => $amt) {
-            $costByCategory[] = ['label' => $label, 'amount' => $amt, 'pct' => $totalCost ? round($amt * 100 / $totalCost, 1) : 0];
+            $costByCategory[] = ['label' => $label, 'amount' => $amt, 'pct' => $totalCost ? round($amt * 100 / $totalCost, 1) : 0, 'group' => $catGroup[$label] ?? 'driver'];
         }
-        // Đội xe: doanh thu − chi phí = lợi nhuận mỗi xe + tỷ lệ chi phí/doanh thu
+        // 4 nhóm lớn → khoản (bỏ tiền tố "Chi phí xe · " cho gọn vì đã ở trong nhóm)
+        $grouped = [];
+        foreach ($cat as $label => $amt) {
+            $g = $catGroup[$label] ?? 'driver';
+            $grouped[$g] ??= ['key' => $g, 'label' => self::COST_GROUPS[$g], 'amount' => 0, 'items' => []];
+            $grouped[$g]['amount'] += $amt;
+            $grouped[$g]['items'][] = ['label' => preg_replace('/^Chi phí (xe|tài sản|lô) · /u', '', $label), 'amount' => $amt];
+        }
+        $costGroups = array_map(function ($g) use ($totalCost) {
+            usort($g['items'], fn ($a, $b) => $b['amount'] <=> $a['amount']);
+            $g['items'] = array_map(fn ($it) => $it + ['pct' => $g['amount'] ? round($it['amount'] * 100 / $g['amount'], 1) : 0], $g['items']);
+            $g['pct'] = $totalCost ? round($g['amount'] * 100 / $totalCost, 1) : 0;
+            return $g;
+        }, array_values($grouped));
+        usort($costGroups, fn ($a, $b) => $b['amount'] <=> $a['amount']);
+
+        // Đội xe: doanh thu − chi phí = lợi nhuận mỗi xe + tỷ lệ chi phí/doanh thu. hashid để deep-link hồ sơ
+        // (BKS từ route-pay không có vehicle_id → tra theo biển số như shipment.vehicle_id).
+        $vehIds = $this->vehicleIdMap();
         $fleet = [];
         foreach ($byPlate as $bks => $v) {
             $rev = (int) ($v['revenue'] ?? 0); $cost = (int) $v['cost'];
-            $fleet[] = ['bks' => $bks, 'vehicleId' => $v['vehicleId'] ?? null, 'revenue' => $rev, 'cost' => $cost, 'profit' => $rev - $cost,
+            $vid = $v['vehicleId'] ?? ($vehIds[mb_strtolower(preg_replace('/\s+/u', ' ', trim((string) $bks)) ?? '')] ?? null);
+            $fleet[] = ['bks' => $bks, 'vehicleId' => $vid, 'hashid' => $vid ? \App\Support\Hashid::encode((int) $vid) : null,
+                'revenue' => $rev, 'cost' => $cost, 'profit' => $rev - $cost,
                 'trips' => $v['trips'], 'conts' => (int) ($v['conts'] ?? 0),
                 'perTrip' => $v['trips'] ? (int) round($cost / $v['trips']) : 0,
-                'costRatio' => $rev ? round($cost * 100 / $rev, 1) : 0];
+                'costRatio' => $rev ? round($cost * 100 / $rev, 1) : 0,
+                'margin' => $rev ? round(($rev - $cost) * 100 / $rev, 1) : null];
         }
         usort($fleet, fn ($a, $b) => $b['cost'] <=> $a['cost']);
         $mkTop = function ($arr) { arsort($arr); $o = []; foreach ($arr as $k => $c) $o[] = ['label' => $k, 'count' => $c]; return $o; };
+        $byCustomer = array_values($byCust);
+        usort($byCustomer, fn ($a, $b) => $b['revenue'] <=> $a['revenue'] ?: $b['conts'] <=> $a['conts']);
+        $byCustomer = array_map(fn ($c) => $c + ['perCont' => $c['conts'] ? (int) round($c['revenue'] / $c['conts']) : 0], $byCustomer);
 
         $profit = $revenue - $totalCost;
         return [
             'year' => $year, 'month' => $month, 'monthLabel' => sprintf('%02d/%d', $month, $year),
             'revenue' => $revenue, 'totalCost' => $totalCost, 'profit' => $profit,
             'margin' => $revenue ? round($profit * 100 / $revenue, 1) : 0,
+            'revenueManual' => $revManual,      // phần doanh thu lấy từ nhập tay (lô không khớp bảng giá)
+            'unmatched' => $unmatched,          // lô đã ra nhưng KHÔNG có doanh thu (chưa khớp bảng giá, chưa nhập tay)
             'trips' => $totalTrips, 'conts' => $shipIds->count(), 'vehicles' => count($byPlate),
             'costByCategory' => $costByCategory,
+            'costGroups' => $costGroups,
             'costByVehicle' => $fleet,            // (giữ tên cũ cho biểu đồ bar) — nay kèm doanh thu/lợi nhuận
             'fleet' => $fleet,
+            'byCustomer' => $byCustomer,
             'byRoute' => $mkTop($byRoute),
             'byKho'   => $mkTop($byKho),
         ];
     }
 
     /**
-     * Xu hướng 12 THÁNG (kết tại year/month): Doanh thu / Chi phí / Lợi nhuận mỗi tháng.
-     * Doanh thu + chi phí lô/xe gom bằng SQL; chi phí lái xe (route-pay) cộng theo ngày.
+     * Xu hướng 12 THÁNG (kết tại year/month): Doanh thu / Chi phí / Lợi nhuận / số cont mỗi tháng.
+     * Doanh thu định giá theo bảng giá từng lô (như báo cáo tháng); chi phí lô (NET) / xe gom bằng SQL;
+     * chi phí lái xe (route-pay) cộng theo ngày.
      */
     public function costTrend(int $year, int $month): array
     {
@@ -1123,25 +1189,28 @@ trait HandlesTripAndDrivers
         $rangeStart = $startM->copy()->startOfMonth(); $rangeEnd = $endM->copy()->endOfMonth();
         $sd = $rangeStart->format('Y-m-d'); $ed = $rangeEnd->format('Y-m-d');
 
-        $keys = []; $rev = []; $cost = [];
-        for ($d = $startM->copy(); $d->lte($endM); $d->addMonth()) { $k = $d->format('Y-m'); $keys[] = $k; $rev[$k] = 0; $cost[$k] = 0; }
+        $keys = []; $rev = []; $cost = []; $conts = [];
+        for ($d = $startM->copy(); $d->lte($endM); $d->addMonth()) { $k = $d->format('Y-m'); $keys[] = $k; $rev[$k] = 0; $cost[$k] = 0; $conts[$k] = 0; }
 
-        // Doanh thu theo tháng Giờ xe ra
-        foreach (TruckingRevenueLine::where('kind', 'doanhThu')
-            ->join('trucking_shipments', 'trucking_shipments.id', '=', 'trucking_revenue_lines.shipment_id')
-            ->whereNotNull('gio_xe_ra')->whereDate('gio_xe_ra', '>=', $sd)->whereDate('gio_xe_ra', '<=', $ed)
-            ->selectRaw("DATE_FORMAT(gio_xe_ra,'%Y-%m') ym, SUM(trucking_revenue_lines.amount) amt")
-            ->groupBy('ym')->get() as $r) { if (isset($rev[$r->ym])) $rev[$r->ym] += (float) $r->amt; }
+        // Doanh thu theo tháng Giờ xe ra — định giá theo BẢNG GIÁ từng lô (fallback nhập tay), như báo cáo tháng
+        foreach (TruckingShipment::whereNotNull('gio_xe_ra')->whereDate('gio_xe_ra', '>=', $sd)->whereDate('gio_xe_ra', '<=', $ed)
+            ->with(['costLines', 'revenueLines', 'customer:id,name', 'raOther:id,gio_xe_ra'])->get() as $sh) {
+            $date = substr($this->outDate($sh->gio_xe_ra), 0, 10);
+            $ym = substr($date, 0, 7);
+            if (! isset($rev[$ym])) continue;
+            $rev[$ym] += $this->reportShipmentRevenue($sh, $date)['amount'];
+            $conts[$ym]++;
+        }
 
-        // Chi phí lô (cost_lines non-billable) theo tháng Giờ xe ra
+        // Chi phí lô (cost_lines non-billable, số NET đã trừ VAT) theo tháng Giờ xe ra
         foreach (TruckingCostLine::join('trucking_shipments', 'trucking_shipments.id', '=', 'trucking_cost_lines.shipment_id')
             ->where(fn ($q) => $q->where('trucking_cost_lines.billable', false)->orWhereNull('trucking_cost_lines.billable'))
             ->whereNotNull('gio_xe_ra')->whereDate('gio_xe_ra', '>=', $sd)->whereDate('gio_xe_ra', '<=', $ed)
-            ->selectRaw("DATE_FORMAT(gio_xe_ra,'%Y-%m') ym, SUM(trucking_cost_lines.amount) amt")
+            ->selectRaw("DATE_FORMAT(gio_xe_ra,'%Y-%m') ym, SUM(ROUND(trucking_cost_lines.amount / (1 + COALESCE(trucking_cost_lines.vat,0)/100))) amt")
             ->groupBy('ym')->get() as $r) { if (isset($cost[$r->ym])) $cost[$r->ym] += (float) $r->amt; }
 
-        // Chi phí xe theo spend_date
-        foreach (TruckingVehicleCost::whereNotNull('spend_date')->whereDate('spend_date', '>=', $sd)->whereDate('spend_date', '<=', $ed)
+        // Chi phí xe theo spend_date (bỏ phiếu đã hủy)
+        foreach (TruckingVehicleCost::whereNull('cancelled_at')->whereNotNull('spend_date')->whereDate('spend_date', '>=', $sd)->whereDate('spend_date', '<=', $ed)
             ->selectRaw("DATE_FORMAT(spend_date,'%Y-%m') ym, SUM(amount) amt")->groupBy('ym')->get() as $r) {
             if (isset($cost[$r->ym])) $cost[$r->ym] += (float) $r->amt;
         }
@@ -1156,8 +1225,10 @@ trait HandlesTripAndDrivers
         $rows = [];
         foreach ($keys as $k) {
             [$y, $m] = explode('-', $k);
+            $r = (int) round($rev[$k]); $c = (int) round($cost[$k]);
             $rows[] = ['ym' => $k, 'label' => $m . '/' . substr($y, 2),
-                'revenue' => (int) round($rev[$k]), 'cost' => (int) round($cost[$k]), 'profit' => (int) round($rev[$k] - $cost[$k])];
+                'revenue' => $r, 'cost' => $c, 'profit' => $r - $c, 'conts' => $conts[$k],
+                'margin' => $r ? round(($r - $c) * 100 / $r, 1) : null];
         }
         return ['rows' => $rows];
     }
